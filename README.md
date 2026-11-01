@@ -4,6 +4,18 @@ Cortico World 的长期记忆插件：**一张卡片表 + 4 个工具 + 一段�
 
 设计目标很朴素：**每轮多花的 token 控制在 1.3k 以内**（工具声明约 853 + 提示词约 381），同时让角色真的记得住事、查得到、改得对。
 
+![记忆图谱](assets/screenshots/graph.png)
+
+<p align="center"><sub>图谱：节点大小＝权重，颜色＝类型，连线＝共同标签或同一天。</sub></p>
+
+| 列表 | 时间线 |
+|---|---|
+| ![列表](assets/screenshots/table.png) | ![时间线](assets/screenshots/timeline.png) |
+
+<p align="center"><sub>维护面板：重复 / 疑似作废 / 垃圾 / 回收站，都先预览再执行。</sub></p>
+
+![维护](assets/screenshots/maintenance.png)
+
 ## 安装
 
 ```bash
@@ -111,9 +123,19 @@ node --experimental-transform-types tools/test-store.ts
 
 # World 层：用假宿主真启动一次，跑写、查、closes 取代
 node --experimental-transform-types tools/test-world.ts
+
+# 改了工具或提示词之后，重新生成市场详情页读的自描述
+node --experimental-transform-types tools/build-describe.ts
+
+# 拍市场截图：用一套虚构的示例记忆起临时站点，拍完自己清理
+node --experimental-transform-types tools/demo-server.ts
 ```
 
 改 `src/` 后**必须重启宿主进程**才生效：`/api/worlds/restart` 只重建实例，ESM 模块缓存不会重读。
+
+## 市场标签
+
+`cortico.tags` 里声明的是扩展市场词表里的标签：`memory`（记忆库）、`companion`（心情/日程/主动开口）、`internal-state`（在世界里维护角色内部状态，市场会提示更推荐放进 bot 的 Persona）、`experimental`（0.x，只在少数环境验证过）。要改标签发新版本即可，不用提申请。
 
 ## License
 
