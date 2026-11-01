@@ -1,0 +1,11 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# 本地数据与快照，别提交
+data/
+s5.json
+*.bak
+*.bak-*
+imported.json

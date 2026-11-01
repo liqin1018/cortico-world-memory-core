@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN" data-mode="auto">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>记忆地图 · 记忆核心</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <div class="brand-text">
+        <strong>记忆地图</strong>
+        <span id="brand-sub">…</span>
+      </div>
+    </div>
+
+    <div class="searchbox" role="search">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6"></circle><path d="M13.5 13.5 17 17"></path></svg>
+      <input id="search" type="search" placeholder="搜记忆、对话、文件…（/ 或 ⌘K）" autocomplete="off" spellcheck="false" />
+      <button id="search-clear" class="icon-btn tiny" title="清空 (Esc)" aria-label="清空搜索" hidden>×</button>
+    </div>
+
+    <nav class="tabs" id="tabs" role="tablist" aria-label="视图">
+      <button role="tab" data-view="graph" data-letter="图" class="tab active" title="图谱 (1)"><span>图谱</span></button>
+      <button role="tab" data-view="timeline" data-letter="线" class="tab" title="时间线 (2)"><span>时间线</span></button>
+      <button role="tab" data-view="table" data-letter="表" class="tab" title="列表 (3)"><span>列表</span></button>
+      <button role="tab" data-view="turns" data-letter="文" class="tab" title="对话原文 (4)"><span>原文</span></button>
+      <button role="tab" data-view="docs" data-letter="件" class="tab" title="工作区文件 (5)"><span>文件</span></button>
+    </nav>
+
+    <div class="top-actions">
+      <button id="btn-new" class="btn primary" title="新建记忆 (n)">＋ 记忆</button>
+      <button id="btn-refresh" class="icon-btn" title="刷新 (r)" aria-label="刷新">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3"></path><path d="M16 3.5V7h-3.5"></path></svg>
+      </button>
+      <button id="btn-theme" class="icon-btn" title="跟随系统 / 深色 / 浅色" aria-label="切换主题">◐</button>
+      <button id="btn-more" class="icon-btn" title="导出与帮助" aria-label="更多">⋯</button>
+    </div>
+  </header>
+
+  <section class="metrics" id="metrics" aria-label="概览"></section>
+
+  <main class="workspace">
+    <aside class="rail" id="rail" aria-label="筛选"></aside>
+    <section class="stage" id="stage">
+      <div class="view" id="view-graph">
+        <canvas id="graph"></canvas>
+        <div class="graph-hud">
+          <div class="legend" id="graph-legend"></div>
+          <div class="hud-actions">
+            <button class="chip-btn" id="graph-fit" title="适应窗口">适应</button>
+            <button class="chip-btn" id="graph-relayout" title="重新布局">重排</button>
+            <label class="switch"><input type="checkbox" id="graph-labels" checked /><span>标签</span></label>
+          </div>
+        </div>
+        <div class="empty" id="graph-empty" hidden>
+          <p>还没有记忆。</p>
+          <p class="dim">聊几句，或者点右上角「＋ 记忆」。</p>
+        </div>
+      </div>
+      <div class="view" id="view-timeline" hidden></div>
+      <div class="view" id="view-table" hidden></div>
+      <div class="view" id="view-turns" hidden></div>
+      <div class="view" id="view-docs" hidden></div>
+    </section>
+    <aside class="inspector" id="inspector" aria-label="详情">
+      <button class="insp-stub" id="insp-stub" title="展开右栏 (I)" aria-label="展开右栏">
+        <span class="stub-chev">‹</span>
+        <span class="stub-label">概览</span>
+        <span class="stub-count" id="stub-count">0</span>
+      </button>
+      <div class="insp-body" id="insp-body"></div>
+    </aside>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status-count">—</span>
+    <span class="sep"></span>
+    <span id="status-site" class="dim"></span>
+    <span class="grow"></span>
+    <span class="kbd-hints">
+      <kbd>/</kbd> 搜 <kbd>J</kbd><kbd>K</kbd> 移动 <kbd>Enter</kbd> 打开 <kbd>E</kbd> 改 <kbd>N</kbd> 新建 <kbd>I</kbd> 右栏 <kbd>?</kbd> 快捷键
+    </span>
+  </footer>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <header><h2 id="modal-title">新建记忆</h2><button class="icon-btn" id="modal-close" aria-label="关闭">×</button></header>
+    <div class="modal-body" id="modal-body"></div>
+    <footer id="modal-foot"></footer>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<div class="menu" id="menu" hidden></div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

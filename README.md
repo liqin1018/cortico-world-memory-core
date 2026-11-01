@@ -1,0 +1,120 @@
+# 记忆核心 · cortico-world-memory-core
+
+Cortico World 的长期记忆插件：**一张卡片表 + 4 个工具 + 一段静态提示词**，另外附带角色自己的状态、今日日程、主动开口，以及一个跑在本机的「记忆地图」站点。
+
+设计目标很朴素：**每轮多花的 token 控制在 1.3k 以内**（工具声明约 853 + 提示词约 381），同时让角色真的记得住事、查得到、改得对。
+
+## 安装
+
+```bash
+pnpm add cortico-world-memory-core
+# 或在扩展市场里搜「记忆核心」
+```
+
+装完在部署配置的 `worlds['memory-core']` 里把 `enabled` 设为 `true`，重启宿主。第一次启动会建 `data/memory-core/` 并写入初始状态。
+
+## 四个工具
+
+| 工具 | 作用 |
+|---|---|
+| `mcore_write` | 写一条记忆。`kind` 五选一，可带 `weight` / `tags` / `dueAt`；传 `closes` 表示「这条替代了某条旧的」 |
+| `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；`mode=open` 看没做完的承诺和今天的安排 |
+| `mcore_state` | 角色自己的精力 / 心情 / 正在做什么 / 在哪 / 睡没睡 |
+| `mcore_plan` | 今天的日程（增、勾、清空） |
+
+召回结果每行开头的 8 位就是卡片 id，模型拿它就能在下次 `mcore_write` 里用 `closes` 把旧的那条收起来。
+
+## 记忆模型
+
+- **五类 kind**：`fact`（关于对方的事实）、`self`（关于角色自己）、`episode`（发生过的一件事）、`promise`（答应过的事，带 `dueAt`）、`note`（过几天就没用的临时信息）。
+- **退休而不是删除**：每张卡有 `status`（`active` / `retired`）。退休的卡退出检索与列表，但留在库里，随时能恢复；真删要二次确认。
+- **改内容留版本**：编辑一条记忆不会覆盖，而是生成新版本，旧版标 `retired`、新卡记 `supersedes`，形成可回溯的版本链。
+- **记忆域 `scope`**：默认 `main`，导入的旧数据是 `import`。现在只用于站点筛选，为将来多场景分流留位。
+- **重复合并**：同类型、二元组相似度超过阈值会成组出现在「维护」面板里，先预览再合并；合并会把标签、权重、截止时间并到保留的那条上。
+
+## 记忆地图（webui/）
+
+插件启动时在 `127.0.0.1:7801` 起一个本地站点（端口被占自动 +1），扩展页里有入口。纯静态页面，无构建、无依赖、不联网。
+
+| 视图 | 能干什么 |
+|---|---|
+| 图谱 | 力导向图：节点大小＝权重、颜色＝类型、连线＝共同标签或同一天；滚轮缩放、拖动、双击适应 |
+| 时间线 | 按天分组，带权重条与截止时间 |
+| 列表 | 可排序表格（类型 / 内容 / 权重 / 来源 / 标签 / 记于 / 使用次数），权重带微条 |
+| 原文 | 最近 7 天的对话原文，搜索高亮 |
+| 文件 | 工作区里被检索的 md / txt（只读） |
+| 维护 | 重复 / 疑似作废 / 垃圾 / 回收站，四项都先预览再执行 |
+
+右栏是详情：可改文本、类型、权重、标签、截止时间，能复制、看相关记忆与版本链；没有选中时收成一条 46px 的窄条，把宽度还给舞台。
+
+快捷键：`/` 搜索 · `1–5` 切视图 · `J/K` 移动 · `Enter` 打开 · `E` 改 · `N` 新建 · `I` 右栏 · `R` 刷新 · `?` 帮助。
+深链接：`/?view=timeline`、`/?card=<id>`。
+
+四条实现约束（改的时候别破坏）：
+
+1. 只绑 `127.0.0.1` —— 站点没有身份认证，不能对局域网露面；
+2. 端口被占自动 +1，起不来只少一个链接，不影响 World 挂载；
+3. 写操作走插件内存里的同一个 store，不直接改文件，否则宿主下一次 `save()` 会把文件覆盖回去；
+4. `/api/doc` 只允许读配置里列出的目录。
+
+## 省 token 的四条硬约束
+
+1. `envPromptVars()` 只回常量 —— 前缀永远不变，缓存不会因为「今天主动了几次」被冲掉。
+2. 默认不每轮推送状态；要就开 `contextEveryMin`。
+3. 主动开口先看对方最近 8 小时说过话没有，没有就只把 `dueAt` 往后推，不调模型。
+4. 工作区文件检索有 60 秒缓存，只在 `recall` 带 query 时才发生，不增加每轮成本。
+
+## 主要配置
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `memoryEnabled` | `true` | 记忆总开关 |
+| `captureTurns` | `true` | 存对方最近的对话原文，供「搜最近聊过什么」 |
+| `captureSenders` | `^(starpost\.private\.\|qq\.\|desktop-pet\.message)` | 哪些来源算对话（正则匹配 senderKey），群聊不算 |
+| `captureMinLength` | `4` | 短于这个字数的消息不进原文库 |
+| `rawRetentionDays` | `7` | 原文保留天数 |
+| `recallLimit` | `5` | 一次召回给几条 |
+| `recallMaxChars` | `600` | 召回结果总字数上限 |
+| `proactiveEnabled` | `true` | 主动开口 |
+| `proactiveMinGapMin` / `proactiveDailyCap` | `100` / `3` | 主动间隔与每日上限 |
+| `nightlyConsolidate` | `false` | 夜间整理（会多一次完整请求，默认关） |
+| `siteEnabled` / `sitePort` | `true` / `7801` | 记忆地图 |
+
+全部可在设置页热改（`siteEnabled` / `sitePort` 需要重载 World）。
+
+## 数据目录
+
+```
+data/memory-core/
+├─ cards.jsonl      卡片（一行一张，可以直接看）
+├─ turns.jsonl      对方最近的对话原文（按 captureSenders 过滤）
+├─ plans.json       今天的日程
+├─ state.json       精力/心情/活动/位置/主动计数
+└─ imported.json    旧数据导入记录（删掉它会在下次启动重新导入）
+```
+
+## 从其它记忆插件导入
+
+首次启动时，如果部署数据目录里存在下面这些文件，会**只读**导入，原文件不动，导完写 `imported.json`：
+
+- `records.json`（private-companion 风格）
+- `memory.json`（陪伴小屋风格）
+- `workspace/memories/*.md`（带 front-matter 的笔记）
+
+导入的卡片 `scope` 标为 `import`，在站点左栏可以单独筛出来看，确认没问题再合并或退休。
+
+## 开发
+
+```bash
+# 数据层：退休 / 恢复 / 改版血缘 / 重复合并 / 作废与垃圾识别
+node --experimental-transform-types tools/test-store.ts
+
+# World 层：用假宿主真启动一次，跑写、查、closes 取代
+node --experimental-transform-types tools/test-world.ts
+```
+
+改 `src/` 后**必须重启宿主进程**才生效：`/api/worlds/restart` 只重建实例，ESM 模块缓存不会重读。
+
+## License
+
+MIT

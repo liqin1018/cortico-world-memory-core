@@ -1,0 +1,49 @@
+{
+  "name": "cortico-world-memory-core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cortico World 长期记忆：一张卡片表 + 4 个工具 + 一段静态提示词，附状态、日程、主动开口与本地记忆地图。",
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "coopanion",
+    "memory",
+    "companion",
+    "proactive"
+  ],
+  "author": "lutsing",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liqin1018/cortico-world-memory-core.git"
+  },
+  "homepage": "https://github.com/liqin1018/cortico-world-memory-core#readme",
+  "bugs": {
+    "url": "https://github.com/liqin1018/cortico-world-memory-core/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./src/index.ts",
+  "cortico": {
+    "kind": "world",
+    "api": 6,
+    "displayName": "记忆核心",
+    "tags": [
+      "memory",
+      "companion",
+      "proactive",
+      "life"
+    ]
+  },
+  "files": [
+    "src",
+    "webui",
+    "ENV_PROMPT.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
