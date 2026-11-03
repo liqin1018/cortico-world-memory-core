@@ -574,22 +574,46 @@ export class RawLog {
       }
       this.entries = kept;
       // 过期的挪进按天归档，不再直接抹掉：要翻旧日子用 mode=archive
-      if (expired.length) this.archive(expired);
+      // 传已归档游标：启动时文件里可能还留着上次归档过的行（老版本写的），别再写一遍
+      if (expired.length) this.archive(expired, this.archivedCursors());
       this.rewrite();
     } catch {
       this.entries = [];
     }
   }
 
+  /** 归档里已经有过的游标。只在启动时算一次，避免重启后把同一行反复写进归档。 */
+  private archivedCursors(): Set<number> {
+    const set = new Set<number>();
+    for (const { file } of this.archiveFiles()) {
+      try {
+        for (const line of readFileSync(file, 'utf8').split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const e = JSON.parse(line) as RawEntry;
+            if (typeof e.cursor === 'number') set.add(e.cursor);
+          } catch {
+            // 跳过坏行
+          }
+        }
+      } catch {
+        // 读不出就当作没归档过
+      }
+    }
+    return set;
+  }
+
   /** 按天追加到 archive/YYYY-MM-DD.jsonl，只写不读，读的时候再按需扫。 */
-  private archive(items: readonly RawEntry[]): void {
+  private archive(items: readonly RawEntry[], seen?: Set<number>): void {
     const buckets = new Map<string, string[]>();
     for (const e of items) {
+      if (seen?.has(e.cursor)) continue;
       const day = dayKeyOf(e.ts);
       if (!day) continue;
+      const line = JSON.stringify(e);
       const list = buckets.get(day);
-      if (list) list.push(JSON.stringify(e));
-      else buckets.set(day, [JSON.stringify(e)]);
+      if (list) list.push(line);
+      else buckets.set(day, [line]);
     }
     for (const [day, lines] of buckets) {
       try {
@@ -715,11 +739,17 @@ export class RawLog {
       this.entries = keep;
     }
     if (expired.length) this.archive(expired);
-    try {
-      appendFileSync(this.file, fresh.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
-    } catch {
-      // ignore
+    // 只把「还在热数据里」的新行写文件。过期的新行已经进归档了，留在 turns.jsonl 里
+    // 会让下次启动再归档一遍（回放时会重复写）。
+    const hot = new Set(this.entries.map((e) => e.cursor));
+    const writable = fresh.filter((e) => hot.has(e.cursor));
+    if (writable.length) {
+      try {
+        appendFileSync(this.file, writable.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+      } catch {
+        // ignore
+      }
     }
-    return fresh.length;
+    return writable.length;
   }
 }

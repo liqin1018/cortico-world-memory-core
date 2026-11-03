@@ -2,7 +2,7 @@
  * 验证捕获与原文归档：白名单、回放、按天归档、归档保留。
  * 跑法：node --experimental-transform-types tools/test-capture.ts
  */
-import { mkdtempSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryCoreWorld } from '../src/world.ts';
@@ -160,4 +160,48 @@ function boot(over: Record<string, unknown> = {}) {
   log.add(rows);
   const archived = log.readArchive(30, 9999).length;
   console.log('6) 4100 行 → 热', log.size, '| 归档', archived, log.size === 4000 && archived === 100 ? 'OK' : 'FAIL');
+}
+
+// 7) 过期的新行直接进归档，不留在 turns.jsonl（否则下次启动会再归档一遍）
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-idem-'));
+  const log = new RawLog(dir, 7, 90);
+  log.add([
+    { cursor: 1, ts: ago(10), sender: 'private:1', text: '十天前的旧话' },
+    { cursor: 2, ts: new Date().toISOString(), sender: 'private:1', text: '今天的话' },
+  ]);
+  const hotLines = (d: string) => {
+    const f = join(d, 'turns.jsonl');
+    return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean) : [];
+  };
+  const arcLines = (d: string) => {
+    const a = join(d, 'archive');
+    return existsSync(a)
+      ? readdirSync(a).flatMap((n) => readFileSync(join(a, n), 'utf8').trim().split('\n').filter(Boolean))
+      : [];
+  };
+  const hot1 = hotLines(dir).length;
+  const arc1 = arcLines(dir).length;
+  const again = new RawLog(dir, 7, 90); // 重启一次
+  const arc2 = arcLines(dir).length;
+  console.log('7) 热', hot1, '行 | 归档', arc1, '→ 重启后', arc2,
+    hot1 === 1 && arc1 === 1 && arc2 === 1 ? 'OK' : 'FAIL');
+  void log;
+  void again;
+}
+
+// 8) 老版本留下的残局：过期行还在 turns.jsonl，archive 里也已经有一份 —— 不能写第二遍
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-idem2-'));
+  const stale = { cursor: 1, ts: ago(10), sender: 'private:1', text: '老版本残留的旧话' };
+  writeFileSync(join(dir, 'turns.jsonl'), JSON.stringify(stale) + '\n', 'utf8');
+  mkdirSync(join(dir, 'archive'), { recursive: true });
+  writeFileSync(join(dir, 'archive', `${stale.ts.slice(0, 10)}.jsonl`), JSON.stringify(stale) + '\n', 'utf8');
+  const log = new RawLog(dir, 7, 90);
+  const arc = readdirSync(join(dir, 'archive'))
+    .flatMap((n) => readFileSync(join(dir, 'archive', n), 'utf8').trim().split('\n').filter(Boolean));
+  const hot = readFileSync(join(dir, 'turns.jsonl'), 'utf8').trim();
+  console.log('8) 残留行已归档 → 归档', arc.length, '行 | 热文件', hot ? '还有残留' : '已清空',
+    arc.length === 1 && !hot ? 'OK' : 'FAIL');
+  void log;
 }
