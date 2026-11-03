@@ -10,6 +10,9 @@ const KINDS = [
   { id: 'note', label: '临时', css: '--k-note' },
 ];
 
+/** 原文页一次渲染多少条。7 天窗口实测稳定在 1000 条上下，全量拼 DOM 会卡。 */
+const TURNS_PAGE = 200;
+
 const S = {
   snap: null,
   view: 'graph',
@@ -30,6 +33,7 @@ const S = {
   status: 'active', // active | all | retired
   scope: null,
   maintenance: null,
+  turnsLimit: TURNS_PAGE,
 };
 
 const el = {
@@ -655,6 +659,29 @@ class Graph {
         links.push({ a: group[0], b: group[i], w: 1, tag });
       }
     }
+    // 版本链：新卡 supersedes 旧卡。这条边比标签共现更有信息量，所以优先级更高——
+    // 两卡之间如果已经有标签边，就把它升级成版本链，不再画第二条重合的线。
+    // 方向按时间流：旧 → 新，箭头指向新卡。
+    const pairKey = (x, y) => (x.id < y.id ? `${x.id}|${y.id}` : `${y.id}|${x.id}`);
+    const seen = new Map(links.map((l) => [pairKey(l.a, l.b), l]));
+    for (const n of nodes) {
+      for (const oldId of n.card.supersedes ?? []) {
+        const target = index.get(oldId);
+        if (!target) continue;
+        const key = pairKey(target, n);
+        const exist = seen.get(key);
+        if (exist) {
+          exist.kind = 'supersede';
+          exist.w = 1.2;
+          exist.a = target;
+          exist.b = n;
+        } else {
+          const l = { a: target, b: n, w: 1.2, tag: null, kind: 'supersede' };
+          links.push(l);
+          seen.set(key, l);
+        }
+      }
+    }
     // 没有标签连线的节点，按同一天挂到最近的一个节点上，避免孤岛
     const linked = new Set(links.flatMap((l) => [l.a.id, l.b.id]));
     for (const n of nodes) {
@@ -798,35 +825,64 @@ class Graph {
         if (l.b.id === this.hover) hoverNeighbors.add(l.a.id);
       }
     }
+    // 版本链两端的节点一定要带标签，否则「被取代的是什么」看不出来
+    const chainIds = new Set();
+    for (const l of this.links) {
+      if (l.kind !== 'supersede') continue;
+      chainIds.add(l.a.id);
+      chainIds.add(l.b.id);
+    }
 
-    const line = palette().line;
+    const P = palette();
+    const ink = P.ink;
+    const line = P.line;
     for (const l of this.links) {
       const dim = this.hover && l.a.id !== this.hover && l.b.id !== this.hover;
-      ctx.strokeStyle = line;
-      ctx.globalAlpha = dim ? 0.07 : 0.16 + l.w * 0.22;
-      ctx.lineWidth = (0.8 + l.w * 1.1) / k;
+      const sup = l.kind === 'supersede';
+      ctx.strokeStyle = sup ? ink : line;
+      ctx.globalAlpha = dim ? 0.07 : sup ? 0.45 : 0.16 + l.w * 0.22;
+      ctx.lineWidth = (sup ? 1.5 : 0.8 + l.w * 1.1) / k;
+      ctx.setLineDash(sup ? [4 / k, 3 / k] : []);
       ctx.beginPath();
       ctx.moveTo(l.a.x, l.a.y);
       ctx.lineTo(l.b.x, l.b.y);
       ctx.stroke();
+      if (sup) {
+        // 箭头指向新卡：这条线读作「旧的那条演进成了它」
+        const ang = Math.atan2(l.b.y - l.a.y, l.b.x - l.a.x);
+        const r = l.b.r + 3 / k;
+        const tipX = l.b.x - Math.cos(ang) * r;
+        const tipY = l.b.y - Math.sin(ang) * r;
+        const size = 5 / k;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX - Math.cos(ang - 0.42) * size, tipY - Math.sin(ang - 0.42) * size);
+        ctx.lineTo(tipX - Math.cos(ang + 0.42) * size, tipY - Math.sin(ang + 0.42) * size);
+        ctx.closePath();
+        ctx.fillStyle = ink;
+        ctx.fill();
+      }
     }
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
-    const P = palette();
-    const ink = P.ink;
     for (const n of this.nodes) {
       const c = P.kinds[n.card.kind] ?? ink;
       const isSel = n.card.id === S.selected;
       const isHover = n.card.id === this.hover;
       const dim = this.hover && !isHover && !hoverNeighbors.has(n.card.id) && !isSel;
-      ctx.globalAlpha = dim ? 0.28 : 1;
+      // 被版本链补进来的旧卡已经退休，压暗一档，别让人以为它还在用
+      const retired = n.card.status === 'retired';
+      const baseAlpha = dim ? 0.28 : retired ? 0.5 : 1;
+      ctx.globalAlpha = baseAlpha;
       if (isSel || isHover) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, n.r + 5 / k, 0, Math.PI * 2);
         ctx.fillStyle = c;
         ctx.globalAlpha = 0.16;
         ctx.fill();
-        ctx.globalAlpha = dim ? 0.28 : 1;
+        ctx.globalAlpha = baseAlpha;
       }
       ctx.beginPath();
       ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
@@ -838,9 +894,10 @@ class Graph {
         ctx.stroke();
       }
       const showLabel =
-        isSel || isHover || (S.showLabels && (k > 1.32 || this.nodes.length <= 16));
+        isSel || isHover
+        || (S.showLabels && (chainIds.has(n.card.id) || k > 1.32 || this.nodes.length <= 16));
       if (showLabel) {
-        ctx.globalAlpha = dim ? 0.3 : 0.95;
+        ctx.globalAlpha = dim ? 0.3 : retired ? 0.55 : 0.95;
         const size = Math.max(9.5, 11.5 / k);
         ctx.font = `${size}px -apple-system, "PingFang SC", sans-serif`;
         ctx.textAlign = 'center';
@@ -865,8 +922,10 @@ function renderGraph() {
   if (!graph) graph = new Graph(canvas);
   graph.onSelect = (id) => selectCard(id);
   graph.showLabels = S.showLabels;
-  const list = filtered();
-  $('#graph-empty').hidden = list.length > 0;
+  const base = filtered();
+  // 版本链的另一头通常是已退休的旧卡，默认筛选看不到——补进图里，边才画得出来
+  const list = withSuperseded(base);
+  $('#graph-empty').hidden = base.length > 0;
   graph.draw();
   // 结构变化才重排；只改选中不重排
   const signature = list.map((c) => c.id).join(',');
@@ -884,9 +943,28 @@ function renderLegend() {
   const box = $('#graph-legend');
   const counts = {};
   for (const c of filtered()) counts[c.kind] = (counts[c.kind] || 0) + 1;
+  const hasChain = withSuperseded(filtered()).some((c) => (c.supersedes ?? []).length);
   box.innerHTML =
     '<span style="color:var(--ink-dim)">大小＝权重</span>' +
-    KINDS.filter((k) => counts[k.id]).map((k) => `<span><i style="background:var(${k.css})"></i>${k.label} ${counts[k.id]}</span>`).join('');
+    KINDS.filter((k) => counts[k.id]).map((k) => `<span><i style="background:var(${k.css})"></i>${k.label} ${counts[k.id]}</span>`).join('') +
+    (hasChain ? '<span style="color:var(--ink-dim)">虚线箭头＝被新版本接替</span>' : '');
+}
+
+/** 把被在用卡 supersedes 掉的旧卡补进图。它们默认已退休、不在筛选结果里，
+ *  但版本链恰恰是这个视图最该看得见的关系。 */
+function withSuperseded(list) {
+  const ids = new Set(list.map((c) => c.id));
+  const extra = [];
+  for (const c of list) {
+    for (const oldId of c.supersedes ?? []) {
+      if (ids.has(oldId)) continue;
+      const old = cards().find((x) => x.id === oldId);
+      if (!old) continue;
+      ids.add(oldId);
+      extra.push(old);
+    }
+  }
+  return extra.length ? [...list, ...extra] : list;
 }
 
 $('#graph-fit').addEventListener('click', () => graph?.fit());
@@ -1037,8 +1115,8 @@ function renderTable() {
 function renderTurns() {
   const host = $('#view-turns');
   const toks = tokens(S.query);
-  const turns = (S.snap?.turns ?? []).filter((t) => matches(t.text, toks)).slice().reverse();
-  if (!turns.length) {
+  const matched = (S.snap?.turns ?? []).filter((t) => matches(t.text, toks)).slice().reverse();
+  if (!matched.length) {
     const dbg = S.snap?.state?.captureDebug;
     let hint = '在插件设置里确认「存对话原文」是开的，聊几句就会出现在这里。';
     if (dbg && dbg.scanned && !dbg.kept) {
@@ -1050,18 +1128,27 @@ function renderTurns() {
     }</p></div></div>`;
     return;
   }
+  // 全量拼 DOM 在 1000 条时会明显卡：先渲染最近 200 条，要更多再点。
+  // 分组按匹配总数算，组头显示「已显示/该天总数」，不让人误以为那天只有这么几句。
   const groups = new Map();
-  for (const t of turns) {
+  for (const t of matched) {
     const key = dayKey(t.ts);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(t);
   }
-  host.innerHTML = `<div class="turns-wrap">${[...groups.entries()]
-    .map(
-      ([key, items]) => `
+  const limit = Math.max(TURNS_PAGE, Math.min(S.turnsLimit ?? TURNS_PAGE, matched.length));
+  let remain = limit;
+  const parts = [];
+  for (const [key, items] of groups) {
+    if (remain <= 0) break;
+    const take = items.slice(0, remain);
+    remain -= take.length;
+    parts.push(`
       <div class="day-group">
-        <div class="day-head"><b>${dayLabel(key)}</b><span>${items.length} 条</span></div>
-        ${items
+        <div class="day-head"><b>${dayLabel(key)}</b><span>${
+          take.length === items.length ? `${items.length} 条` : `${take.length} / ${items.length} 条`
+        }</span></div>
+        ${take
           .map(
             (t) => `<div class="turn">
               <div><time>${fmtTime(t.ts).slice(6)}</time><div class="who">${esc(shortSender(t.sender))}</div></div>
@@ -1069,9 +1156,17 @@ function renderTurns() {
             </div>`,
           )
           .join('')}
-      </div>`,
-    )
-    .join('')}</div>`;
+      </div>`);
+  }
+  const more =
+    matched.length > limit
+      ? `<button class="btn turns-more" id="turns-more">还有 ${matched.length - limit} 条 · 继续加载</button>`
+      : '';
+  host.innerHTML = `<div class="turns-wrap">${parts.join('')}${more}</div>`;
+  $('#turns-more')?.addEventListener('click', () => {
+    S.turnsLimit = limit + TURNS_PAGE;
+    renderTurns();
+  });
 }
 
 function shortSender(key) {
@@ -1199,7 +1294,6 @@ function renderInspector() {
           ? `<button class="btn tiny" id="btn-restore">恢复这条</button>`
           : `<button class="btn tiny" id="btn-retire">退休</button>`
       }
-      <button class="btn tiny danger" id="btn-delete">彻底删除</button>
     </div>
     ${lineageHtml(card)}
     ${
@@ -1236,18 +1330,7 @@ function renderInspector() {
       toast('复制失败，浏览器不给剪贴板权限', true);
     }
   });
-  $('#btn-delete').addEventListener('click', async () => {
-    if (!confirm(`彻底删掉这条？删了就找不回来了。\n\n${card.text}`)) return;
-    try {
-      await api('/api/purge', { method: 'POST', body: JSON.stringify({ ids: [card.id] }) });
-      S.selected = null;
-      setInspCollapsed(true);
-      toast('已彻底删除');
-      await load();
-    } catch (err) {
-      toast(`删除失败：${err.message}`, true);
-    }
-  });
+  // 彻底删除只在维护面板 → 回收站里给：详情栏紧挨「退休」，误触一次就没了
   const retireBtn = $('#btn-retire');
   if (retireBtn) {
     retireBtn.addEventListener('click', async () => {
@@ -1596,15 +1679,22 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
+// 逐字 render 会把原文 1000+ 条、表格几十行整体重建，打字快了肉眼可见地卡。
+// 输入框状态立刻更新（清除按钮要跟手），重绘压到 150ms 后。
+let searchTimer = 0;
 el.search.addEventListener('input', () => {
   S.query = el.search.value;
   S.searchClear.hidden = !S.query;
-  render();
+  S.turnsLimit = TURNS_PAGE;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => render(), 150);
 });
 el.searchClear.addEventListener('click', () => {
   S.query = '';
   el.search.value = '';
   S.searchClear.hidden = true;
+  S.turnsLimit = TURNS_PAGE;
+  clearTimeout(searchTimer);
   render();
 });
 

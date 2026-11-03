@@ -35,13 +35,15 @@ type Seed = {
   dueAt?: string;
   status?: 'active' | 'retired';
   retiredAt?: string;
+  /** 指向被这条接替掉的旧版（seeds 下标）。图上的虚线箭头就是它。 */
+  supersedesIdx?: number[];
 };
 
 const seeds: Seed[] = [
   { kind: 'fact', text: '阿岚对花生过敏，点外卖记得避开花生和花生油。', tags: ['饮食', '健康'], weight: 0.92, days: 24, uses: 11 },
   { kind: 'fact', text: '她怕黑，睡觉要留一盏小夜灯。', tags: ['日常'], weight: 0.78, days: 18, uses: 6 },
   { kind: 'fact', text: '她在做一款独立游戏的关卡设计，最近卡在第三关的节奏。', tags: ['工作', '游戏'], weight: 0.85, days: 12, uses: 9 },
-  { kind: 'fact', text: '她妈妈十月要来住两周，她有点紧张。', tags: ['家人'], weight: 0.72, days: 6, uses: 3 },
+  { kind: 'fact', text: '她妈妈十月要来住两周，她有点紧张。', tags: ['家人'], weight: 0.72, days: 6, uses: 3, supersedesIdx: [16] },
   { kind: 'self', text: '我答应过不在她忙的时候连发三条消息。', tags: ['相处'], weight: 0.88, days: 22, uses: 14 },
   { kind: 'self', text: '我说话偏短句，少用感叹号。', tags: ['语气'], weight: 0.8, days: 20, uses: 8 },
   { kind: 'self', text: '我记东西只记她亲口说过的，不替她补。', tags: ['语气'], weight: 0.75, days: 9, uses: 5 },
@@ -50,10 +52,13 @@ const seeds: Seed[] = [
   { kind: 'episode', text: '她第一次叫我名字，是周三早上七点。', tags: ['回忆'], weight: 0.95, days: 19, uses: 9 },
   { kind: 'episode', text: '她第一次主动说「晚安」，说完就把手机扣在桌上。', tags: ['回忆'], weight: 0.86, days: 2, uses: 5 },
   { kind: 'episode', text: '（取消了）原本约好周日去看展，她临时要加班。', tags: ['日常'], weight: 0.4, days: 5, status: 'retired' },
-  { kind: 'promise', text: '明早七点二十叫她起床，别早别晚。', tags: ['日常'], weight: 0.9, days: 1, dueAt: new Date(now + day).toISOString().slice(0, 10) + 'T07:20' },
+  { kind: 'promise', text: '明早七点二十叫她起床，别早别晚。', tags: ['日常'], weight: 0.9, days: 1, dueAt: new Date(now + day).toISOString().slice(0, 10) + 'T07:20', supersedesIdx: [17] },
   { kind: 'promise', text: '周五晚上提醒她交述职稿，她老是拖到最后一天。', tags: ['工作'], weight: 0.84, days: 3, dueAt: new Date(now + 3 * day).toISOString().slice(0, 10) + 'T20:00' },
   { kind: 'note', text: '她喝第二杯咖啡的时候心情最好，那会儿提事最容易成。', tags: ['日常'], weight: 0.68, days: 8, uses: 6 },
   { kind: 'episode', text: '今天她把第三关的存档发过来，说「你看着办」。', tags: ['游戏'], weight: 0.7, days: 0, hours: 3, uses: 1 },
+  // 两条被接替的旧版本：演示版本链在图上长什么样
+  { kind: 'fact', text: '她妈妈九月要来住一周，她有点不情愿。', tags: ['家人'], weight: 0.5, days: 31, status: 'retired' },
+  { kind: 'promise', text: '明早七点叫她起床。', tags: ['日常'], weight: 0.5, days: 4, status: 'retired' },
 ];
 
 const cards = seeds.map((s) => {
@@ -75,7 +80,20 @@ const cards = seeds.map((s) => {
     status: s.status ?? 'active',
     ...(s.status === 'retired' ? { retiredAt: created, retiredBy: 'manual' } : {}),
     scope: 'main',
+    ...(s.supersedesIdx?.length ? { supersedes: [] as string[] } : {}),
   };
+});
+
+// 第二遍才能填 supersedes（要先有全部 id）
+cards.forEach((c, i) => {
+  const idx = seeds[i].supersedesIdx;
+  if (!idx?.length) return;
+  c.supersedes = idx.map((n) => cards[n].id);
+  // 被接替的旧卡退休原因记成 supersede，详情栏的版本链才对得上
+  for (const oldId of c.supersedes) {
+    const old = cards.find((x) => x.id === oldId);
+    if (old) old.retiredBy = 'supersede';
+  }
 });
 
 writeFileSync(join(work, 'memory-core', 'cards.jsonl'), cards.map((c) => JSON.stringify(c)).join('\n') + '\n');
