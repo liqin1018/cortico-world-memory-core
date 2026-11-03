@@ -32,8 +32,16 @@ function fakeHost(rows: typeof events) {
   return {
     log: { info: () => {}, warn: () => {}, error: () => {} },
     store: {
-      range: ({ fromCursor, limit }: { fromCursor: number; limit: number }) =>
-        rows.filter((e) => e.cursor >= fromCursor).slice(0, limit),
+      // 照宿主真实语义：limit 是「从区间末尾取至多 limit 条」，不是从头取。
+      // 这里早先写成从头 slice，正好把 v1「一次跳到历史末尾」的 bug 掩盖了。
+      range: ({ fromCursor, toCursor, limit }: { fromCursor?: number; toCursor?: number; limit?: number }) => {
+        let hit = rows.filter(
+          (e) => (fromCursor === undefined || e.cursor >= fromCursor)
+            && (toCursor === undefined || e.cursor <= toCursor),
+        );
+        if (limit !== undefined && hit.length > limit) hit = hit.slice(hit.length - limit);
+        return hit;
+      },
     },
   } as never;
 }
@@ -95,6 +103,25 @@ function boot(over: Record<string, unknown> = {}) {
   const st = JSON.parse(readFileSync(join(dataDir, 'memory-core', 'state.json'), 'utf8'));
   console.log('3) 回放 →', n, '行 | 水位', st.rawWatermark, '| 已完成标记', Boolean(st.backfillDoneAt),
     n === EXPECT && st.rawWatermark === LAST && st.backfillDoneAt ? 'OK' : 'FAIL');
+  await world.stop();
+}
+
+// 3b) 长历史：匹配的都在开头，后面隔着一千多条无关事件。
+//     v1 拿 {fromCursor, limit} 当分页，会一次跳到末尾，只可能留下最后几条。
+{
+  const long = Array.from({ length: 1500 }, (_, i) => ({
+    cursor: i + 1,
+    ts: new Date().toISOString(),
+    senderKey: i < 5 ? 'desktop-pet.chat' : 'gaming.match',
+    text: i < 5 ? `开头第 ${i + 1} 句话在这里` : '无关事件',
+  }));
+  const { world, dataDir } = boot({ captureBackfill: true });
+  await world.start(fakeHost(long as never));
+  const file = join(dataDir, 'memory-core', 'turns.jsonl');
+  const rows = existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) : [];
+  const st = JSON.parse(readFileSync(join(dataDir, 'memory-core', 'state.json'), 'utf8'));
+  console.log('3b) 长历史回放 →', rows.length, '行 | 水位', st.rawWatermark, '/ 1500',
+    rows.length === 5 && st.rawWatermark === 1500 && st.backfillDoneAt ? 'OK' : 'FAIL');
   await world.stop();
 }
 

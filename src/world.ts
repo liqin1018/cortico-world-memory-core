@@ -38,6 +38,15 @@ const ENV_PROMPT_FILE = fileURLToPath(new URL('../ENV_PROMPT.md', import.meta.ur
 const WEB_DIR = fileURLToPath(new URL('../webui/', import.meta.url));
 const TICK_MS = 60_000;
 
+/**
+ * 捕获水位的可信版本号。
+ * v1 用 `range({fromCursor, limit})` 分页，但宿主的 limit 是「从区间末尾取」，
+ * 一次就把水位推到历史末尾、前面的全跳过。升到 v2 后旧水位作废，自动重放一遍。
+ */
+const CAPTURE_WATERMARK_VERSION = 2;
+/** 一次 range 的窗口宽度。cursor 是全局连续的，按窗口边界推进，窗口内没有匹配也能往前走。 */
+const CAPTURE_BATCH = 500;
+
 function clip(text: string, limit: number): string {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
   return s.length > limit ? `${s.slice(0, limit)}…` : s;
@@ -727,7 +736,10 @@ export class MemoryCoreWorld implements World {
     try {
       const now = new Date();
       advance(this.state, now, this.tz(), this.cfg());
-      this.capture(Boolean(this.cfg().captureBackfill) && !this.state.backfillDoneAt);
+      this.capture(
+        Boolean(this.cfg().captureBackfill)
+        && (Number(this.state.watermarkVersion ?? 0) < CAPTURE_WATERMARK_VERSION || !this.state.backfillDoneAt),
+      );
       await this.maybeContext(now);
       await this.maybeRemind(now);
       await this.maybeProactive(now);
@@ -762,41 +774,53 @@ export class MemoryCoreWorld implements World {
 
   /**
    * 从宿主的 external 事件流里捞对方说的话。
-   * backfill=true 时把水位倒回 0 一次性重扫（只在 captureBackfill 打开且没做过时触发）。
+   *
+   * 宿主 `range` 的语义有两处容易踩：`limit` 是**从区间末尾取**，不是从头取；
+   * 只有不传 fromCursor 时才走「倒着凑最近 N 条」的快路径。所以拿
+   * `{fromCursor, limit}` 当分页会一次跳到历史末尾——v1 就是这么把 2.5 万条
+   * 外对话全跳过的。这里改用 toCursor 开窗，一窗一窗往前推。
    */
   private capture(backfill = false): void {
     const cfg = this.cfg();
     const host = this.host;
     if (!cfg.captureTurns || !host?.store) return;
     const re = this.senderRe(cfg);
-    // 只在回放开始那一刻倒水位：中途被打断的话，下一次从水位接着跑，不从头再来
-    if (backfill && !this.state.backfillStartedAt) {
+    // 旧版水位是按错的 limit 语义推出来的，不可信：重放一遍
+    if (backfill && Number(this.state.watermarkVersion ?? 0) < CAPTURE_WATERMARK_VERSION) {
       this.state.rawWatermark = 0;
+      this.state.watermarkVersion = CAPTURE_WATERMARK_VERSION;
       this.state.backfillStartedAt = new Date().toISOString();
+      this.state.backfillDoneAt = undefined;
     }
+    // 区间上界：只取最后一条，读一个分片就够
+    let head = 0;
+    try {
+      const last = host.store.range({ limit: 1 });
+      head = last.length ? last[0].cursor : 0;
+    } catch {
+      return;
+    }
+    let from = Number(this.state.rawWatermark ?? 0) || 0;
+    if (from > head) from = 0; // 宿主换过数据目录，cursor 从头开始
     const minLen = Math.max(1, Number(cfg.captureMinLength) || 4);
     const items: RawEntry[] = [];
     const keys = new Set<string>();
     let scanned = 0;
-    let from = Number(this.state.rawWatermark ?? 0) || 0;
-    let rounds = backfill ? 40 : 1;
-    let drained = false;
-    while (rounds > 0) {
-      rounds -= 1;
+    // 实时每拍最多追 4 窗（2000 条）防积压；回放一次最多 400 窗（20 万条）
+    const budget = backfill ? 400 : 4;
+    let rounds = 0;
+    let drained = from >= head;
+    while (!drained && rounds < budget) {
+      rounds += 1;
+      const to = Math.min(from + CAPTURE_BATCH, head);
       let events: readonly { cursor: number; ts: string; senderKey?: string; text: string }[] = [];
       try {
-        events = host.store.range({ fromCursor: from + 1, origin: 'external', limit: 400 });
+        events = host.store.range({ fromCursor: from + 1, toCursor: to, origin: 'external' });
       } catch {
         break;
       }
-      if (!events.length) {
-        drained = true;
-        break;
-      }
       scanned += events.length;
-      let maxCursor = from;
       for (const e of events) {
-        maxCursor = Math.max(maxCursor, e.cursor);
         const key = e.senderKey ?? '';
         if (!re.test(key)) {
           // 记几个被挡掉的 key，出问题时一眼能看出是白名单还是正文的问题
@@ -812,15 +836,9 @@ export class MemoryCoreWorld implements World {
         if (/^\[[^\]]{0,12}\]$/.test(text.trim())) continue;
         items.push({ cursor: e.cursor, ts: e.ts, sender: key.slice(0, 40), text });
       }
-      if (maxCursor === from) {
-        drained = true;
-        break;
-      }
-      from = maxCursor;
-      if (events.length < 400) {
-        drained = true;
-        break;
-      }
+      // 按窗口边界推进，不按「最后一个匹配到的 cursor」：窗口里可能一条 external 都没有
+      from = to;
+      if (from >= head) drained = true;
     }
     this.raw.add(items);
     this.state.rawWatermark = from;
@@ -831,6 +849,7 @@ export class MemoryCoreWorld implements World {
         scanned,
         kept: items.length,
         keys: items.length ? [] : [...keys],
+        ...(backfill && !drained ? { backfillFrom: from, backfillTo: head } : {}),
       };
     }
   }

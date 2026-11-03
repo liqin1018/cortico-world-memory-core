@@ -34,10 +34,18 @@ console.log('真实事件', events.length, '条 | cursor', events[0]?.cursor, '�
 const host = {
   log: { info: () => {}, warn: () => {}, error: () => {} },
   store: {
-    range: ({ fromCursor, origin, limit }: { fromCursor: number; origin?: string; limit: number }) =>
-      events
-        .filter((e) => e.cursor >= fromCursor && (!origin || e.origin === origin))
-        .slice(0, limit),
+    // 照宿主 event-store.ts 的真实语义：limit 从区间末尾取，toCursor 是闭区间
+    range: ({ fromCursor, toCursor, origin, limit }: {
+      fromCursor?: number; toCursor?: number; origin?: string; limit?: number;
+    }) => {
+      let hit = events.filter(
+        (e) => (fromCursor === undefined || e.cursor >= fromCursor)
+          && (toCursor === undefined || e.cursor <= toCursor)
+          && (!origin || e.origin === origin),
+      );
+      if (limit !== undefined && hit.length > limit) hit = hit.slice(hit.length - limit);
+      return hit;
+    },
   },
 } as never;
 
@@ -59,7 +67,8 @@ for (const r of rows) bySender.set(r.sender, (bySender.get(r.sender) ?? 0) + 1);
 console.log('来源分布', [...bySender.entries()]);
 console.log('最近 5 条：');
 for (const r of rows.slice(-5)) console.log(' •', r.ts.slice(5, 16), r.sender, '|', r.text.slice(0, 60));
-const bad = rows.filter((r) => /^\[|^\S{1,12}[:：]/.test(r.text));
+// 只认真正的抬头形态：方括号/【】开头、#消息号、昵称冒号（排除数字开头的时刻，如 23:10）
+const bad = rows.filter((r) => /^\[|^【|^#-?\d|^[^\s:：0-9]{1,12}[:：]/.test(r.text));
 console.log('还带着抬头/前缀的：', bad.length, bad.slice(0, 3).map((b) => b.text.slice(0, 40)));
 for (const b of bad.slice(0, 3)) {
   const src = events.find((e) => e.cursor === b.cursor);

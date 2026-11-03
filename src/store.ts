@@ -68,12 +68,22 @@ export interface CoreState {
   proactiveCount?: number;
   lastNightlyDay?: string;
   rawWatermark?: number;
+  /** 水位是按哪一版捕获逻辑推进的。旧版用了错的 range 语义，水位不可信，见 CAPTURE_WATERMARK_VERSION。 */
+  watermarkVersion?: number;
   /** 历史原文回放只做一次，做完记下时间。 */
   backfillDoneAt?: string;
   /** 回放开始时间：只在开始那一刻倒水位，中断后下次接着跑，不重复从头扫。 */
   backfillStartedAt?: string;
   /** 上一次捕获的体检结果：扫了多少、留下多少、被白名单挡掉的 key 样例。 */
-  captureDebug?: { at: string; scanned: number; kept: number; keys: string[] };
+  captureDebug?: {
+    at: string;
+    scanned: number;
+    kept: number;
+    keys: string[];
+    /** 回放没跑完时，本轮从哪扫到哪，方便看进度。 */
+    backfillFrom?: number;
+    backfillTo?: number;
+  };
 }
 
 export function ensureDir(dir: string): void {
