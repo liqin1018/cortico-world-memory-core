@@ -44,8 +44,9 @@ const TICK_MS = 60_000;
  * 一次就把水位推到历史末尾、前面的全跳过。升到 v2 后旧水位作废，自动重放一遍。
  */
 const CAPTURE_WATERMARK_VERSION = 2;
-/** 一次 range 的窗口宽度。cursor 是全局连续的，按窗口边界推进，窗口内没有匹配也能往前走。 */
-const CAPTURE_BATCH = 500;
+/** 一次 range 的窗口宽度。cursor 是全局连续的，按窗口边界推进，窗口内没有匹配也能往前走。
+ *  取大一点：宿主每次 range 都要遍历一遍分片，窗口太碎会让回放变成几百次全表扫描。 */
+const CAPTURE_BATCH = 2_000;
 
 function clip(text: string, limit: number): string {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
