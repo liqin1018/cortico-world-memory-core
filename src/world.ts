@@ -56,7 +56,9 @@ function str(value: unknown, limit = 200): string {
 /**
  * 事件正文外层常裹着东西，剥干净的才是对方说的话：
  *  - `[星邮消息] {"text":"..."}` —— JSON 壳；
- *  - `[11-03 周二 18:04] [typed] 月:在吗` —— 宿主加的抬头（时间 / 输入方式 / 说话人）。
+ *  - `[11-03 周二 18:04] [typed] 月:在吗` —— 宿主加的抬头（时间 / 输入方式 / 说话人）；
+ *  - `【QQ私聊 22:37 月(QQ:1940008084)】：#-479828398 有点` —— QQ 那层壳 + 消息号；
+ *  - `[23:34] [answer] 月回答「…」:选了第 1 项「…」` —— 选项卡的答案，只留选了什么。
  */
 function extractUserText(raw: string): string {
   let text = String(raw ?? '').trim();
@@ -75,10 +77,21 @@ function extractUserText(raw: string): string {
       // 不是 JSON 就按原样
     }
   }
-  return text
-    .replace(/^\[[^\]]{0,24}\]\s*/, '')
-    .replace(/^\[[^\]]{0,12}\]\s*/, '')
-    .replace(/^[^\s:：]{1,12}[:：]\s*/, '')
+  // 宿主给每层壳的顺序不固定（【】、#消息号、[时间] [输入方式]、说话人:），
+  // 一轮一轮剥到不再变化为止；名字那一步排除数字开头，免得把「18:30 开会」吃掉。
+  let out = text;
+  for (let i = 0; i < 4; i += 1) {
+    const next = out
+      .replace(/^【[^】]{0,40}】[:：]?\s*/, '')
+      .replace(/^#-?\d+\s*/, '')
+      .replace(/^\[[^\]]{0,24}\]\s*/, '')
+      .replace(/^(?![\[\d])[^\s:：\d]{1,12}[:：]\s*/, '');
+    if (next === out) break;
+    out = next;
+  }
+  return out
+    .replace(/^[^「」]{0,6}回答「[^」]{0,80}」[:：]\s*/, '')
+    .replace(/^自己写了[:：]\s*/, '')
     .trim();
 }
 
@@ -791,8 +804,10 @@ export class MemoryCoreWorld implements World {
           continue;
         }
         const text = clip(extractUserText(e.text), 200);
-        // 单字、纯表情、`[取消]` 这类系统回执不进原文库，否则只会污染检索
+        // 单字、纯表情、`[取消]` 这类系统回执、图片 blob 描述，都不进原文库
         if (!text || text.length < minLen) continue;
+        if (/\[blob\b/i.test(text)) continue;
+        if (/^\[(表情包|CQ:|图片)/.test(text)) continue;
         if (/^[\p{P}\p{S}\s]+$/u.test(text)) continue;
         if (/^\[[^\]]{0,12}\]$/.test(text.trim())) continue;
         items.push({ cursor: e.cursor, ts: e.ts, sender: key.slice(0, 40), text });
