@@ -53,22 +53,33 @@ function str(value: unknown, limit = 200): string {
   return typeof value === 'string' ? clip(value, limit) : '';
 }
 
-/** 事件正文常包一层 JSON：`[星邮消息] {"kind":...,"text":"..."}`。 */
+/**
+ * 事件正文外层常裹着东西，剥干净的才是对方说的话：
+ *  - `[星邮消息] {"text":"..."}` —— JSON 壳；
+ *  - `[11-03 周二 18:04] [typed] 月:在吗` —— 宿主加的抬头（时间 / 输入方式 / 说话人）。
+ */
 function extractUserText(raw: string): string {
-  const text = String(raw ?? '');
-  const m = /^\[[^\]]{0,12}消息\]\s*(\{[\s\S]*\})$/.exec(text.trim());
+  let text = String(raw ?? '').trim();
+  const m = /^\[[^\]]{0,12}消息\]\s*(\{[\s\S]*\})$/.exec(text);
   if (m) {
     try {
       const obj = JSON.parse(m[1]) as Record<string, unknown>;
       for (const key of ['text', 'message', 'content', 'msg']) {
         const v = obj[key];
-        if (typeof v === 'string' && v.trim()) return v;
+        if (typeof v === 'string' && v.trim()) {
+          text = v.trim();
+          break;
+        }
       }
     } catch {
       // 不是 JSON 就按原样
     }
   }
-  return text;
+  return text
+    .replace(/^\[[^\]]{0,24}\]\s*/, '')
+    .replace(/^\[[^\]]{0,12}\]\s*/, '')
+    .replace(/^[^\s:：]{1,12}[:：]\s*/, '')
+    .trim();
 }
 
 export class MemoryCoreWorld implements World {

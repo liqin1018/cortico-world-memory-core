@@ -10,6 +10,8 @@ import { MEMORY_CORE_DEFAULTS } from '../src/config.ts';
 import { RawLog } from '../src/store.ts';
 
 const OLD = '^(starpost\\.private\\.|qq\\.|desktop-pet\\.message)';
+const EXPECT = 6;
+const LAST = 10;
 const ago = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 
 const events = [
@@ -21,6 +23,9 @@ const events = [
   { cursor: 6, ts: new Date().toISOString(), senderKey: 'private:1940008084', text: '[取消]' },
   { cursor: 7, ts: new Date().toISOString(), senderKey: 'starpost.private.7', text: '晚上七点见' },
   { cursor: 8, ts: new Date().toISOString(), senderKey: 'desktop-pet.chat', text: '今天风好大，把晾的衣服收一下' },
+  // 宿主真实抬头：[时间] [输入方式] 说话人:正文 —— 这些都要剥掉，只留正文
+  { cursor: 9, ts: new Date().toISOString(), senderKey: 'desktop-pet.chat', text: '[11-03 周二 18:06] [typed] 月:为什么你很少在B站评论' },
+  { cursor: 10, ts: new Date().toISOString(), senderKey: 'starpost.private.7', text: '[星邮消息] {"kind":"text","text":"下午三点在老地方等你"}' },
 ];
 
 function fakeHost(rows: typeof events) {
@@ -60,7 +65,7 @@ function boot(over: Record<string, unknown> = {}) {
   const texts = lines.map((l) => JSON.parse(l).text);
   console.log('1) 捕获', lines.length, '行 →', texts);
   console.log('   白名单：私聊/桌宠/语音/星邮 ✓，桌宠自己/群聊/[取消]/太短 ✗ →',
-    lines.length === 4 && !texts.some((t) => t.includes('我在的') || t.includes('群里')) ? 'OK' : 'FAIL');
+    lines.length === EXPECT && !texts.some((t) => t.includes('我在的') || t.includes('群里')) ? 'OK' : 'FAIL');
   await world.stop();
 }
 
@@ -70,7 +75,7 @@ function boot(over: Record<string, unknown> = {}) {
   await world.start(fakeHost(events));
   const file = join(dataDir, 'memory-core', 'turns.jsonl');
   const n = existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).length : 0;
-  console.log('2) 旧默认值迁移 →', n, '行', n === 4 ? 'OK' : 'FAIL');
+  console.log('2) 旧默认值迁移 →', n, '行', n === EXPECT ? 'OK' : 'FAIL');
   await world.stop();
 }
 
@@ -89,7 +94,7 @@ function boot(over: Record<string, unknown> = {}) {
   const n = existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).length : 0;
   const st = JSON.parse(readFileSync(join(dataDir, 'memory-core', 'state.json'), 'utf8'));
   console.log('3) 回放 →', n, '行 | 水位', st.rawWatermark, '| 已完成标记', Boolean(st.backfillDoneAt),
-    n === 4 && st.rawWatermark === 8 && st.backfillDoneAt ? 'OK' : 'FAIL');
+    n === EXPECT && st.rawWatermark === LAST && st.backfillDoneAt ? 'OK' : 'FAIL');
   await world.stop();
 }
 
