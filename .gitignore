@@ -9,3 +9,6 @@ s5.json
 *.bak
 *.bak-*
 imported.json
+
+# 演示截图用的临时驱动页，demo-server 每次运行会重建
+webui/_drive.html

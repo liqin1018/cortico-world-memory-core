@@ -55,7 +55,9 @@
   },
   "files": [
     "src",
-    "webui",
+    "webui/app.js",
+    "webui/index.html",
+    "webui/style.css",
     "assets",
     "ENV_PROMPT.md",
     "describe.json",
