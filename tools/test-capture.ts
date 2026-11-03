@@ -205,3 +205,19 @@ function boot(over: Record<string, unknown> = {}) {
     arc.length === 1 && !hot ? 'OK' : 'FAIL');
   void log;
 }
+
+// 9) 文件里行序是乱的（老行在前、补录行在后），读出来要按 cursor 归位
+//    真实环境里补录 1327 行时就踩过：原文页显示成 8:25 → 10:32 → 8:24
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-sort-'));
+  const now = new Date().toISOString();
+  const rows = [
+    { cursor: 900, ts: now, sender: 'private:1', text: '后写进来的' },
+    { cursor: 5, ts: now, sender: 'private:1', text: '补录回来的' },
+    { cursor: 40, ts: now, sender: 'private:1', text: '中间的' },
+  ];
+  writeFileSync(join(dir, 'turns.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  const log = new RawLog(dir, 7, 90);
+  const out = log.all().map((e) => e.cursor);
+  console.log('9) 乱序文件 → 读出', out.join(','), out.join(',') === '5,40,900' ? 'OK' : 'FAIL');
+}

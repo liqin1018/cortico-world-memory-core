@@ -573,6 +573,9 @@ export class RawLog {
         }
       }
       this.entries = kept;
+      // 文件可能是「老版本写的最后几行 + 补录回来的开头几行」拼起来的，按 cursor 归一，
+      // 不然原文页会按数组顺序显示成 8:25 → 10:32 → 8:24 这种乱序
+      this.sortEntries();
       // 过期的挪进按天归档，不再直接抹掉：要翻旧日子用 mode=archive
       // 传已归档游标：启动时文件里可能还留着上次归档过的行（老版本写的），别再写一遍
       if (expired.length) this.archive(expired, this.archivedCursors());
@@ -687,7 +690,7 @@ export class RawLog {
         // ignore
       }
     }
-    return out;
+    return out.sort((a, b) => a.cursor - b.cursor);
   }
 
   private rewrite(): void {
@@ -715,6 +718,11 @@ export class RawLog {
     this.rewrite();
   }
 
+  /** cursor 是宿主分配的单调节，拿它排最可靠；ts 在补录数据里不一定跟 cursor 同序。 */
+  private sortEntries(): void {
+    this.entries.sort((a, b) => a.cursor - b.cursor);
+  }
+
   add(items: RawEntry[]): number {
     if (!items.length) return 0;
     // 回放时一次几千行，用 Set 判重，别拿 some() 平方级扫
@@ -739,6 +747,7 @@ export class RawLog {
       this.entries = keep;
     }
     if (expired.length) this.archive(expired);
+    this.sortEntries();
     // 只把「还在热数据里」的新行写文件。过期的新行已经进归档了，留在 turns.jsonl 里
     // 会让下次启动再归档一遍（回放时会重复写）。
     const hot = new Set(this.entries.map((e) => e.cursor));
