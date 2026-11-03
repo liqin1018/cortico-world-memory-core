@@ -81,8 +81,12 @@ export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
     return pool.slice(0, opts.limit);
   }
   const scored = pool.map((card) => {
-    const lexical = overlap(queryTokens, `${card.text} ${card.tags.join(' ')}`);
-    const score = lexical * 2 + card.weight * 0.5 + freshness(card.createdAt, now) - (card.uses || 0) * 0.03;
+    const lexical = overlap(queryTokens, card.text);
+    // 标签单独算一次：对方说「生日」时，打了 #生日 的卡要比正文里顺嘴提到的排得靠前
+    const tagHit = card.tags.length ? overlap(queryTokens, card.tags.join(' ')) : 0;
+    // 同一张卡被反复召回只做有限的边际压制（封顶 8 次），别让常用的重要记忆越用越沉
+    const used = Math.min(card.uses || 0, 8) * 0.03;
+    const score = lexical * 2 + tagHit * 1.2 + card.weight * 0.5 + freshness(card.createdAt, now) - used;
     return { card, score };
   });
   scored.sort((a, b) => b.score - a.score);

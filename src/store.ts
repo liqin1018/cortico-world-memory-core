@@ -2,7 +2,7 @@
  * 卡片表、对话原文、日程与状态的文件层。
  * 只碰本插件自己的数据目录；四套旧记忆由 importer.ts 只读导入，不改原文件。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, appendFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -68,6 +68,12 @@ export interface CoreState {
   proactiveCount?: number;
   lastNightlyDay?: string;
   rawWatermark?: number;
+  /** 历史原文回放只做一次，做完记下时间。 */
+  backfillDoneAt?: string;
+  /** 回放开始时间：只在开始那一刻倒水位，中断后下次接着跑，不重复从头扫。 */
+  backfillStartedAt?: string;
+  /** 上一次捕获的体检结果：扫了多少、留下多少、被白名单挡掉的 key 样例。 */
+  captureDebug?: { at: string; scanned: number; kept: number; keys: string[] };
 }
 
 export function ensureDir(dir: string): void {
@@ -396,12 +402,31 @@ export class CardStore {
     return groups.sort((x, y) => y.score - x.score);
   }
 
-  /** 疑似作废：文案里自己写了「取消了 / 改到 / 作废」，多半已经被后来的记录替代。 */
-  stale(limit = 50): Card[] {
+  /**
+   * 疑似作废：一类是文案里自己写了「取消了 / 改到 / 作废」，
+   * 另一类是放旧了没人再碰——90 天没被召回、从没带过权重、权重还低。
+   * 两类都只是候选，仍然要人点一下才退休。
+   */
+  stale(limit = 50, now = Date.now()): Card[] {
     const re = /取消|黄了|作废|不去了|改成|改到|算了|不用了/;
-    return this.active()
-      .filter((c) => re.test(c.text))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    const hit: Card[] = [];
+    const aged: Card[] = [];
+    for (const c of this.active()) {
+      if (re.test(c.text)) {
+        hit.push(c);
+        continue;
+      }
+      const born = Date.parse(c.createdAt);
+      if (!Number.isFinite(born)) continue;
+      const last = Date.parse(c.lastUsedAt ?? '') || born;
+      const quietDays = (now - last) / 86_400_000;
+      if (quietDays < 90) continue;
+      if ((c.uses || 0) > 1) continue;
+      if (c.weight > 0.45) continue;
+      if (c.kind === 'promise' && !c.done) continue;
+      aged.push(c);
+    }
+    return [...hit.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), ...aged]
       .slice(0, limit);
   }
 
@@ -492,16 +517,31 @@ export class CardStore {
   }
 }
 
+const DAY_FMT = new Intl.DateTimeFormat('sv-SE', { year: 'numeric', month: '2-digit', day: '2-digit' });
+
+/** 事件属于哪一天（本地时区），归档文件按这个命名。 */
+function dayKeyOf(iso: string | undefined): string {
+  const at = Date.parse(iso ?? '');
+  if (!Number.isFinite(at)) return '';
+  return DAY_FMT.format(new Date(at));
+}
+
 export class RawLog {
   private entries: RawEntry[] = [];
   private readonly file: string;
+  private readonly archiveDir: string;
   private readonly retentionDays: number;
+  private readonly archiveDays: number;
 
-  constructor(dir: string, retentionDays: number) {
+  constructor(dir: string, retentionDays: number, archiveDays = 90) {
     this.retentionDays = Math.max(1, Number(retentionDays) || 7);
+    this.archiveDays = Math.max(0, Number(archiveDays) || 0);
     ensureDir(dir);
     this.file = join(dir, 'turns.jsonl');
+    this.archiveDir = join(dir, 'archive');
+    ensureDir(this.archiveDir);
     this.load();
+    this.purgeArchive();
   }
 
   private load(): void {
@@ -509,21 +549,111 @@ export class RawLog {
       if (!existsSync(this.file)) return;
       const cutoff = Date.now() - this.retentionDays * 86_400_000;
       const kept: RawEntry[] = [];
+      const expired: RawEntry[] = [];
       for (const line of readFileSync(this.file, 'utf8').split('\n')) {
         if (!line.trim()) continue;
         try {
           const e = JSON.parse(line) as RawEntry;
           if (!e || typeof e.text !== 'string') continue;
-          if (Date.parse(e.ts) >= cutoff) kept.push(e);
+          const at = Date.parse(e.ts);
+          if (!Number.isFinite(at)) continue;
+          (at >= cutoff ? kept : expired).push(e);
         } catch {
           // 跳过坏行
         }
       }
       this.entries = kept;
+      // 过期的挪进按天归档，不再直接抹掉：要翻旧日子用 mode=archive
+      if (expired.length) this.archive(expired);
       this.rewrite();
     } catch {
       this.entries = [];
     }
+  }
+
+  /** 按天追加到 archive/YYYY-MM-DD.jsonl，只写不读，读的时候再按需扫。 */
+  private archive(items: readonly RawEntry[]): void {
+    const buckets = new Map<string, string[]>();
+    for (const e of items) {
+      const day = dayKeyOf(e.ts);
+      if (!day) continue;
+      const list = buckets.get(day);
+      if (list) list.push(JSON.stringify(e));
+      else buckets.set(day, [JSON.stringify(e)]);
+    }
+    for (const [day, lines] of buckets) {
+      try {
+        appendFileSync(join(this.archiveDir, `${day}.jsonl`), `${lines.join('\n')}\n`, 'utf8');
+      } catch {
+        // 归档失败不影响热数据
+      }
+    }
+  }
+
+  private archiveFiles(desc = false): Array<{ day: string; file: string }> {
+    try {
+      const names = readdirSync(this.archiveDir)
+        .filter((n) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(n))
+        .sort();
+      if (desc) names.reverse();
+      return names.map((n) => ({ day: n.slice(0, 10), file: join(this.archiveDir, n) }));
+    } catch {
+      return [];
+    }
+  }
+
+  /** 归档保留天数，0 = 永久。 */
+  private purgeArchive(): void {
+    if (!this.archiveDays) return;
+    const cutoff = dayKeyOf(new Date(Date.now() - this.archiveDays * 86_400_000).toISOString());
+    for (const { day, file } of this.archiveFiles()) {
+      if (day >= cutoff) continue;
+      try {
+        unlinkSync(file);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /** 归档概况，给界面显示。 */
+  stats(): { days: number; bytes: number; oldest: string } {
+    const files = this.archiveFiles();
+    let bytes = 0;
+    for (const f of files) {
+      try {
+        bytes += statSync(f.file).size;
+      } catch {
+        // ignore
+      }
+    }
+    return { days: files.length, bytes, oldest: files[0]?.day ?? '' };
+  }
+
+  /** 翻归档：默认最近 30 天，最多 8000 行。只给 mode=archive 用，不进常规召回。 */
+  readArchive(days = 30, maxEntries = 8000): RawEntry[] {
+    const span = Math.max(1, Math.min(365, Number(days) || 30));
+    const fromDay = dayKeyOf(new Date(Date.now() - span * 86_400_000).toISOString());
+    const out: RawEntry[] = [];
+    for (const { day, file } of this.archiveFiles(true)) {
+      if (out.length >= maxEntries) break;
+      if (day < fromDay) continue;
+      try {
+        for (const line of readFileSync(file, 'utf8').split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const e = JSON.parse(line) as RawEntry;
+            if (e && typeof e.text === 'string') out.push(e);
+          } catch {
+            // 跳过坏行
+          }
+          if (out.length >= maxEntries) break;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return out;
   }
 
   private rewrite(): void {
@@ -553,12 +683,28 @@ export class RawLog {
 
   add(items: RawEntry[]): number {
     if (!items.length) return 0;
-    const fresh = items.filter((item) => !this.entries.some((e) => e.cursor === item.cursor));
+    // 回放时一次几千行，用 Set 判重，别拿 some() 平方级扫
+    const have = new Set(this.entries.map((e) => e.cursor));
+    const fresh = items.filter((item) => !have.has(item.cursor));
     if (!fresh.length) return 0;
     this.entries.push(...fresh);
     const cutoff = Date.now() - this.retentionDays * 86_400_000;
-    if (this.entries.length > 4000) this.entries = this.entries.slice(-4000);
-    this.entries = this.entries.filter((e) => Date.parse(e.ts) >= cutoff);
+    const keep: RawEntry[] = [];
+    const expired: RawEntry[] = [];
+    for (const e of this.entries) {
+      const at = Date.parse(e.ts);
+      if (!Number.isFinite(at) || at < cutoff) expired.push(e);
+      else keep.push(e);
+    }
+    // 超过 4000 行的老行也归档，不丢
+    if (keep.length > 4000) {
+      const over = keep.length - 4000;
+      expired.push(...keep.slice(0, over));
+      this.entries = keep.slice(over);
+    } else {
+      this.entries = keep;
+    }
+    if (expired.length) this.archive(expired);
     try {
       appendFileSync(this.file, fresh.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
     } catch {

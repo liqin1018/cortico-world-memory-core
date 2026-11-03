@@ -47,12 +47,17 @@ export const TOOL_SPECS: ToolSpec[] = [
     name: 'mcore_recall',
     description:
       '查记忆。不传 query 就是最近几条；传 query 按内容搜，最近 7 天的对话原文和工作区的笔记文件也会一起搜；'
-      + 'mode=open 看还没做完的承诺与今天的安排。对方提到人、事、日期、旧约定，或问「你还记得吗」时先查再答。',
+      + 'mode=open 看还没做完的承诺与今天的安排；mode=archive 翻归档里的旧对话（要带 query）。'
+      + '对方提到人、事、日期、旧约定，或问「你还记得吗」时先查再答。',
     parameters: obj(
       {
         query: { type: 'string', description: '要查的内容，几个关键词就够' },
         kind: { type: 'string', enum: ['fact', 'self', 'episode', 'promise', 'note'], description: '只看某一类' },
-        mode: { type: 'string', enum: ['search', 'recent', 'open'], description: '默认 search；没给 query 按 recent 处理' },
+        mode: {
+          type: 'string',
+          enum: ['search', 'recent', 'open', 'archive'],
+          description: '默认 search；没给 query 按 recent 处理',
+        },
         days: { type: 'integer', minimum: 1, maximum: 3650, description: '只看最近这么多天' },
         limit: { type: 'integer', minimum: 1, maximum: 12, description: '最多几条，默认 5' },
       },

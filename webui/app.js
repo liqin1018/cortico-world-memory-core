@@ -312,7 +312,7 @@ function renderMetrics() {
     { label: '今天新增', value: st.todayNew, unit: '条' },
     { label: '近 7 天', value: st.weekNew, unit: '条' },
     { label: '平均权重', value: st.avgWeight.toFixed(2), unit: '' },
-    { label: '对话原文', value: (S.snap.turns ?? []).length, unit: '行' },
+    { label: '对话原文', value: (S.snap.turns ?? []).length, unit: S.snap.archive?.days ? `行 · 归档 ${S.snap.archive.days} 天` : '行' },
     { label: '工作区文件', value: S.snap.docs?.count ?? 0, unit: '个', tone: S.snap.docs?.enabled ? '' : '' },
   ];
   el.metrics.innerHTML =
@@ -1039,8 +1039,14 @@ function renderTurns() {
   const toks = tokens(S.query);
   const turns = (S.snap?.turns ?? []).filter((t) => matches(t.text, toks)).slice().reverse();
   if (!turns.length) {
+    const dbg = S.snap?.state?.captureDebug;
+    let hint = '在插件设置里确认「存对话原文」是开的，聊几句就会出现在这里。';
+    if (dbg && dbg.scanned && !dbg.kept) {
+      const keys = (dbg.keys ?? []).map((k) => esc(k)).join('、') || '无';
+      hint = `上次扫了 ${dbg.scanned} 条外部事件，一条都没留下——被「算作对话的来源」白名单挡掉了（样例：${keys}），把这几个 key 加进设置里的正则就行。`;
+    }
     host.innerHTML = `<div class="turns-wrap"><div class="empty"><p>${S.query ? '没有匹配的对话。' : '还没有存下对话原文。'}</p><p class="dim">${
-      S.query ? '' : '在插件设置里确认「存对话原文」是开的，聊几句就会出现在这里。'
+      S.query ? '' : hint
     }</p></div></div>`;
     return;
   }
@@ -1069,9 +1075,10 @@ function renderTurns() {
 }
 
 function shortSender(key) {
-  const map = { starpost: '星邮', qq: 'QQ', 'desktop-pet': '桌宠' };
-  const base = String(key ?? '').split('.')[0];
-  return map[base] ?? String(key ?? '—').slice(0, 12);
+  const raw = String(key ?? '');
+  const base = raw.split(/[.:]/)[0];
+  const map = { starpost: '星邮', qq: 'QQ', private: 'QQ 私聊', 'desktop-pet': '桌宠' };
+  return map[base] ?? (raw || '—').slice(0, 12);
 }
 
 /* ── 工作区文件 ─────────────────────────────────────── */
@@ -1691,7 +1698,7 @@ function renderMaintenance(tab) {
     const list = rows(m.stale);
     content = list.length
       ? list.map((c) => maintRow(c, `<button class="btn tiny" data-retire="${c.id}">退休</button>`)).join('')
-      : '<p class="maint-empty">没有疑似作废的记忆。文案里带「取消了 / 改到 / 作废」的会出现在这里。</p>';
+      : '<p class="maint-empty">没有疑似作废的记忆。文案里带「取消了 / 改到 / 作废」，或者 90 天没被召回、权重又低的，会出现在这里。</p>';
     if (list.length) bulk = `<button class="btn tiny" data-bulk="stale">全部退休（${list.length}）</button>`;
   } else if (tab === 'junk') {
     const list = rows(m.junk);

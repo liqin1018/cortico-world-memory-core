@@ -49,6 +49,7 @@ export interface Snapshot {
     scopes: Array<{ scope: string; n: number }>;
   };
   docs: { enabled: boolean; count: number; dirs: string[] };
+  archive: { days: number; bytes: number; oldest: string };
   site: { port: number; origin: string };
 }
 

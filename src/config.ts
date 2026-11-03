@@ -34,8 +34,12 @@ export interface MemoryCoreConfig {
   captureSenders: string;
   /** 短于这么多字的对话原文不存（过滤表情、单字、口令回执）。 */
   captureMinLength: number;
-  /** 对话原文保留天数。 */
+  /** 对话原文保留天数（热数据，超过就按天归档）。 */
   rawRetentionDays: number;
+  /** 归档保留天数（0 = 永久）。 */
+  rawArchiveDays: number;
+  /** 启动后把历史事件重扫一遍补录（只做一次）。 */
+  captureBackfill: boolean;
   /** 一次召回最多给几条。 */
   recallLimit: number;
   /** 召回结果的总字数上限。 */
@@ -78,9 +82,13 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   sleepEnd: '08:00',
   memoryEnabled: true,
   captureTurns: true,
-  captureSenders: '^(starpost\\.private\\.|qq\\.|desktop-pet\\.message)',
+  // 真实 senderKey 长这样：private:1940008084（QQ 私聊）、desktop-pet.chat（桌宠对话）。
+  // 老默认值一个都匹配不上，导致原文库一直是 0 行 —— 改这个 regex 前先看一遍 data/runs/*/events.jsonl。
+  captureSenders: '^(desktop-pet\\.(chat|message|answer|voice)|private:|qq\\.private\\.|starpost\\.private\\.)',
   captureMinLength: 4,
   rawRetentionDays: 7,
+  rawArchiveDays: 90,
+  captureBackfill: false,
   recallLimit: 5,
   recallMaxChars: 600,
   contextEveryMin: 0,
@@ -170,11 +178,18 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       'worlds.memory-core.captureSenders': {
         type: 'string',
         title: '算作对话的来源',
-        description: '正则匹配事件的 senderKey。默认只认星邮私聊、QQ 私聊和桌宠消息；群聊不算。',
+        description: '正则匹配事件的 senderKey。默认认 QQ 私聊（private:数字）、桌宠对话（desktop-pet.chat / voice）、星邮私聊；群聊不算。填错了一个字都录不到，改完看「对话原文」页有没有进新行。',
         'x-hot': true,
       },
       'worlds.memory-core.captureMinLength': num('原文最短几个字', '短于这个长度的消息不进原文库（表情、单字、口令回执照样过滤）。', 1, 20, '字'),
-      'worlds.memory-core.rawRetentionDays': num('对话原文保留天数', '过期的会在启动时清掉。', 1, 90, '天'),
+      'worlds.memory-core.rawRetentionDays': num('原文热数据天数', '超过这么多天的对话会挪进 archive/ 按天归档，不再直接删。', 1, 90, '天'),
+      'worlds.memory-core.rawArchiveDays': num('归档保留天数', '归档按天存，超过这么多天的文件在启动时删掉。0 = 永久保留（占盘，自己看着办）。', 0, 3650, '天'),
+      'worlds.memory-core.captureBackfill': {
+        type: 'boolean',
+        title: '重扫历史补录',
+        description: '打开后重启一次：把水位倒回开头，把宿主还留着的历史消息重扫一遍。只做一次，做完自动关掉自己。',
+        'x-hot': false,
+      },
       'worlds.memory-core.recallLimit': num('一次召回给几条', '默认 5 条。给多了挤占上下文。', 1, 12, '条'),
       'worlds.memory-core.recallMaxChars': num('召回结果字数上限', '超过就截断，默认 600 字。', 120, 2000, '字'),
       'worlds.memory-core.contextEveryMin': num('状态投递间隔', '每隔这么多分钟把「我在做什么」推到上下文里。0 = 不推（默认，最省）；推一次约 60 token，但每轮都在历史里。', 0, 240, '分钟'),

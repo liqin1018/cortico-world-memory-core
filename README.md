@@ -30,7 +30,7 @@ pnpm add cortico-world-memory-core
 | 工具 | 作用 |
 |---|---|
 | `mcore_write` | 写一条记忆。`kind` 五选一，可带 `weight` / `tags` / `dueAt`；传 `closes` 表示「这条替代了某条旧的」 |
-| `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；`mode=open` 看没做完的承诺和今天的安排 |
+| `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；`mode=open` 看没做完的承诺和今天的安排；`mode=archive` 翻更早的归档原文 |
 | `mcore_state` | 角色自己的精力 / 心情 / 正在做什么 / 在哪 / 睡没睡 |
 | `mcore_plan` | 今天的日程（增、勾、清空） |
 
@@ -53,7 +53,7 @@ pnpm add cortico-world-memory-core
 | 图谱 | 力导向图：节点大小＝权重、颜色＝类型、连线＝共同标签或同一天；滚轮缩放、拖动、双击适应 |
 | 时间线 | 按天分组，带权重条与截止时间 |
 | 列表 | 可排序表格（类型 / 内容 / 权重 / 来源 / 标签 / 记于 / 使用次数），权重带微条 |
-| 原文 | 最近 7 天的对话原文，搜索高亮 |
+| 原文 | 最近 7 天的对话原文，搜索高亮；更早的进 `archive/`，模型可用 `mode=archive` 翻回去 |
 | 文件 | 工作区里被检索的 md / txt（只读） |
 | 维护 | 重复 / 疑似作废 / 垃圾 / 回收站，四项都先预览再执行 |
 
@@ -82,9 +82,11 @@ pnpm add cortico-world-memory-core
 |---|---|---|
 | `memoryEnabled` | `true` | 记忆总开关 |
 | `captureTurns` | `true` | 存对方最近的对话原文，供「搜最近聊过什么」 |
-| `captureSenders` | `^(starpost\.private\.\|qq\.\|desktop-pet\.message)` | 哪些来源算对话（正则匹配 senderKey），群聊不算 |
+| `captureSenders` | `^(desktop-pet\.(chat\|message\|answer\|voice)\|private:\|qq\.private\.\|starpost\.private\.)` | 哪些来源算对话（正则匹配 senderKey）。真实 key 长这样：`private:1940008084`、`desktop-pet.chat`；群聊不算 |
 | `captureMinLength` | `4` | 短于这个字数的消息不进原文库 |
-| `rawRetentionDays` | `7` | 原文保留天数 |
+| `rawRetentionDays` | `7` | 热数据天数，超过就按天挪进 `archive/`（不再直接删） |
+| `rawArchiveDays` | `90` | 归档保留天数，`0` = 永久 |
+| `captureBackfill` | `false` | 打开后重启一次：把水位倒回开头重扫历史消息，补录完自动停用 |
 | `recallLimit` | `5` | 一次召回给几条 |
 | `recallMaxChars` | `600` | 召回结果总字数上限 |
 | `proactiveEnabled` | `true` | 主动开口 |
@@ -100,6 +102,7 @@ pnpm add cortico-world-memory-core
 data/memory-core/
 ├─ cards.jsonl      卡片（一行一张，可以直接看）
 ├─ turns.jsonl      对方最近的对话原文（按 captureSenders 过滤）
+├─ archive/         过期的原文按天归档（YYYY-MM-DD.jsonl），可搜可删
 ├─ plans.json       今天的日程
 ├─ state.json       精力/心情/活动/位置/主动计数
 └─ imported.json    旧数据导入记录（删掉它会在下次启动重新导入）

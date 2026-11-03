@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
 import type { WorldContext } from 'cortico/world.ts';
-import { MEMORY_CORE_CONFIG_GROUP, type MemoryCoreConfig } from './config.ts';
+import { MEMORY_CORE_CONFIG_GROUP, MEMORY_CORE_DEFAULTS, type MemoryCoreConfig } from './config.ts';
 import { TOOL_SPECS } from './tools.ts';
 import {
   CARD_KINDS,
@@ -96,7 +96,11 @@ export class MemoryCoreWorld implements World {
     this.dataDir = join(base, 'memory-core');
     ensureDir(this.dataDir);
     this.store = new CardStore(this.dataDir);
-    this.raw = new RawLog(this.dataDir, Math.max(1, Number(ctx.cfg?.rawRetentionDays ?? 7)));
+    this.raw = new RawLog(
+      this.dataDir,
+      Math.max(1, Number(ctx.cfg?.rawRetentionDays ?? 7)),
+      Math.max(0, Number(ctx.cfg?.rawArchiveDays ?? 90)),
+    );
     this.state = createInitialState(new Date(), this.tz(), this.cfg());
     this.load();
   }
@@ -166,7 +170,11 @@ export class MemoryCoreWorld implements World {
         {
           label: '对话原文',
           state: cfg.captureTurns ? 'online' : 'offline',
-          hint: cfg.captureTurns ? `${this.raw.size} 行，保留 ${cfg.rawRetentionDays} 天` : '已关闭',
+          hint: cfg.captureTurns
+            ? `${this.raw.size} 行，近 ${cfg.rawRetentionDays} 天${
+                this.raw.stats().days ? ` · 归档 ${this.raw.stats().days} 天` : ''
+              }`
+            : '已关闭',
         },
       ],
       badges: [
@@ -333,6 +341,7 @@ export class MemoryCoreWorld implements World {
         scopes: this.store.scopes(),
       },
       docs: { enabled: Boolean(cfg.workspaceScanEnabled), count: docs.length, dirs: cfg.workspaceScanEnabled ? expandDirs(cfg.workspaceDirs, this.ctx.botDir) : [] },
+      archive: this.raw.stats(),
       site: { port: origin ? Number(new URL(origin).port) : 0, origin },
     };
   }
@@ -557,6 +566,16 @@ export class MemoryCoreWorld implements World {
       return lines.length ? lines.join('\n') : '没有未完成的事。';
     }
 
+    if (mode === 'archive') {
+      if (!query) return '翻归档要带 query，给几个关键词。';
+      const span = num(args.days, 30, 1, 3650);
+      const hits = rankRaw(this.raw.readArchive(span), query, Math.max(1, Math.min(limit, 8)));
+      if (!hits.length) return `归档里没找到「${clip(query, 20)}」。`;
+      const out: string[] = ['【归档原文】'];
+      for (const hit of hits) out.push(`· [${formatLocal(hit.ts, tz).slice(0, 10)}] ${clip(hit.text, 110)}`);
+      return out.join('\n').slice(0, maxChars + 40);
+    }
+
     const cards = rankCards(this.store.active(), {
       query: mode === 'search' ? query : undefined,
       kind: str(args.kind, 20) || undefined,
@@ -684,7 +703,7 @@ export class MemoryCoreWorld implements World {
     try {
       const now = new Date();
       advance(this.state, now, this.tz(), this.cfg());
-      this.capture();
+      this.capture(Boolean(this.cfg().captureBackfill) && !this.state.backfillDoneAt);
       await this.maybeContext(now);
       await this.maybeRemind(now);
       await this.maybeProactive(now);
@@ -701,38 +720,93 @@ export class MemoryCoreWorld implements World {
     }
   }
 
-  private capture(): void {
-    if (!this.cfg().captureTurns || !this.host?.store) return;
-    let re: RegExp;
+  /**
+   * 白名单正则。老版本默认值 `^(starpost\.private\.|qq\.|desktop-pet\.message)` 一个真实 key 都匹配不上
+   * （实际是 `private:1940008084`、`desktop-pet.chat` 这种），读到这个旧默认就换成新的，免得用户
+   * 明明没动过设置却一直录不到东西。
+   */
+  private senderRe(cfg: MemoryCoreConfig): RegExp {
+    const raw = String(cfg.captureSenders ?? '').trim();
+    const legacy = '^(starpost\\.private\\.|qq\\.|desktop-pet\\.message)';
+    const pattern = !raw || raw === legacy ? MEMORY_CORE_DEFAULTS.captureSenders : raw;
     try {
-      re = new RegExp(this.cfg().captureSenders || '^(starpost\\.private\\.|qq\\.)');
+      return new RegExp(pattern);
     } catch {
-      re = /^(starpost\.private\.|qq\.)/;
+      return new RegExp(MEMORY_CORE_DEFAULTS.captureSenders);
     }
-    const from = Number(this.state.rawWatermark ?? 0) || 0;
-    let events: readonly { cursor: number; ts: string; senderKey?: string; text: string }[] = [];
-    try {
-      events = this.host.store.range({ fromCursor: from + 1, origin: 'external', limit: 400 });
-    } catch {
-      return;
+  }
+
+  /**
+   * 从宿主的 external 事件流里捞对方说的话。
+   * backfill=true 时把水位倒回 0 一次性重扫（只在 captureBackfill 打开且没做过时触发）。
+   */
+  private capture(backfill = false): void {
+    const cfg = this.cfg();
+    const host = this.host;
+    if (!cfg.captureTurns || !host?.store) return;
+    const re = this.senderRe(cfg);
+    // 只在回放开始那一刻倒水位：中途被打断的话，下一次从水位接着跑，不从头再来
+    if (backfill && !this.state.backfillStartedAt) {
+      this.state.rawWatermark = 0;
+      this.state.backfillStartedAt = new Date().toISOString();
     }
-    if (!events.length) return;
-    const minLen = Math.max(1, Number(this.cfg().captureMinLength) || 4);
+    const minLen = Math.max(1, Number(cfg.captureMinLength) || 4);
     const items: RawEntry[] = [];
-    let maxCursor = from;
-    for (const e of events) {
-      maxCursor = Math.max(maxCursor, e.cursor);
-      if (!re.test(e.senderKey ?? '')) continue;
-      const text = clip(extractUserText(e.text), 200);
-      if (!text) continue;
-      // 单字、纯表情、`[取消]` 这类系统回执不进原文库，否则只会污染检索
-      if (text.length < minLen) continue;
-      if (/^[\p{P}\p{S}\s]+$/u.test(text)) continue;
-      if (/^\[[^\]]{0,12}\]$/.test(text.trim())) continue;
-      items.push({ cursor: e.cursor, ts: e.ts, sender: (e.senderKey ?? '').slice(0, 40), text });
+    const keys = new Set<string>();
+    let scanned = 0;
+    let from = Number(this.state.rawWatermark ?? 0) || 0;
+    let rounds = backfill ? 40 : 1;
+    let drained = false;
+    while (rounds > 0) {
+      rounds -= 1;
+      let events: readonly { cursor: number; ts: string; senderKey?: string; text: string }[] = [];
+      try {
+        events = host.store.range({ fromCursor: from + 1, origin: 'external', limit: 400 });
+      } catch {
+        break;
+      }
+      if (!events.length) {
+        drained = true;
+        break;
+      }
+      scanned += events.length;
+      let maxCursor = from;
+      for (const e of events) {
+        maxCursor = Math.max(maxCursor, e.cursor);
+        const key = e.senderKey ?? '';
+        if (!re.test(key)) {
+          // 记几个被挡掉的 key，出问题时一眼能看出是白名单还是正文的问题
+          if (key && keys.size < 6) keys.add(key);
+          continue;
+        }
+        const text = clip(extractUserText(e.text), 200);
+        // 单字、纯表情、`[取消]` 这类系统回执不进原文库，否则只会污染检索
+        if (!text || text.length < minLen) continue;
+        if (/^[\p{P}\p{S}\s]+$/u.test(text)) continue;
+        if (/^\[[^\]]{0,12}\]$/.test(text.trim())) continue;
+        items.push({ cursor: e.cursor, ts: e.ts, sender: key.slice(0, 40), text });
+      }
+      if (maxCursor === from) {
+        drained = true;
+        break;
+      }
+      from = maxCursor;
+      if (events.length < 400) {
+        drained = true;
+        break;
+      }
     }
     this.raw.add(items);
-    if (maxCursor !== from) this.state.rawWatermark = maxCursor;
+    this.state.rawWatermark = from;
+    if (backfill && drained) this.state.backfillDoneAt = new Date().toISOString();
+    if (scanned || items.length) {
+      this.state.captureDebug = {
+        at: new Date().toISOString(),
+        scanned,
+        kept: items.length,
+        keys: items.length ? [] : [...keys],
+      };
+    }
   }
 
   private countToday(): number {
