@@ -734,3 +734,9 @@ kbd {
 .turn:hover .turn-del, .turn-del:focus-visible { opacity: 1; }
 .turn-del:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: var(--paper); }
 @media (hover: none) { .turn-del { opacity: .55; } }
+
+/* ── 星图皮肤开关 ───────────────────────────────────── */
+.chip-btn.on {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--ink);
+}

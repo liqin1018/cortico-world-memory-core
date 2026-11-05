@@ -29,6 +29,7 @@ const S = {
   docSel: null,
   docText: null,
   showLabels: true,
+  starfield: localStorage.getItem('mcore-stars') === '1',
   inspCollapsed: (localStorage.getItem('mcore-insp') ?? 'off') === 'off',
   status: 'active', // active | all | retired
   scope: null,
@@ -890,7 +891,10 @@ class Graph {
       const dim = this.hover && l.a.id !== this.hover && l.b.id !== this.hover;
       const sup = l.kind === 'supersede';
       ctx.strokeStyle = sup ? ink : line;
-      ctx.globalAlpha = dim ? 0.07 : sup ? 0.45 : 0.16 + l.w * 0.22;
+      // 星图模式把连线压到几乎看不见：留一点结构，不抢光点
+      ctx.globalAlpha = this.stars
+        ? dim ? 0.03 : sup ? 0.22 : 0.05
+        : dim ? 0.07 : sup ? 0.45 : 0.16 + l.w * 0.22;
       ctx.lineWidth = (sup ? 1.5 : 0.8 + l.w * 1.1) / k;
       ctx.setLineDash(sup ? [4 / k, 3 / k] : []);
       ctx.beginPath();
@@ -926,6 +930,17 @@ class Graph {
       const retired = n.card.status === 'retired';
       const baseAlpha = dim ? 0.28 : retired ? 0.5 : 1;
       ctx.globalAlpha = baseAlpha;
+      // 星图皮肤：三层递减的光晕代替实心圆，远看就是一片星云
+      if (this.stars) {
+        for (let ring = 3; ring >= 1; ring -= 1) {
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, n.r * (1 + ring * 0.85), 0, Math.PI * 2);
+          ctx.globalAlpha = baseAlpha * (0.1 / ring);
+          ctx.fillStyle = c;
+          ctx.fill();
+        }
+        ctx.globalAlpha = baseAlpha;
+      }
       if (isSel || isHover) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, n.r + 5 / k, 0, Math.PI * 2);
@@ -972,6 +987,8 @@ function renderGraph() {
   if (!graph) graph = new Graph(canvas);
   graph.onSelect = (id) => selectCard(id);
   graph.showLabels = S.showLabels;
+  graph.stars = S.starfield;
+  syncStarBtn();
   const base = filtered();
   // 版本链的另一头通常是已退休的旧卡，默认筛选看不到——补进图里，边才画得出来
   const list = withSuperseded(base);
@@ -1036,6 +1053,21 @@ $('#graph-relayout').addEventListener('click', () => {
 $('#graph-labels').addEventListener('change', (e) => {
   S.showLabels = e.target.checked;
   if (graph) graph.showLabels = S.showLabels;
+  graph?.draw();
+});
+
+/** 星图只是画法，不动数据和交互；偏好记在本地。 */
+function syncStarBtn() {
+  const btn = $('#graph-stars');
+  if (!btn) return;
+  btn.classList.toggle('on', S.starfield);
+  btn.textContent = S.starfield ? '星图' : '图谱';
+}
+$('#graph-stars').addEventListener('click', () => {
+  S.starfield = !S.starfield;
+  localStorage.setItem('mcore-stars', S.starfield ? '1' : '0');
+  if (graph) graph.stars = S.starfield;
+  syncStarBtn();
   graph?.draw();
 });
 
@@ -2418,6 +2450,10 @@ if (bootQuery) {
 if (bootParams.get('archive') === '1') {
   S.withArchive = true;
   localStorage.setItem('mcore-archive', '1');
+}
+if (bootParams.get('stars') === '1') {
+  S.starfield = true;
+  localStorage.setItem('mcore-stars', '1');
 }
 await load();
 const bootCard = bootParams.get('card');

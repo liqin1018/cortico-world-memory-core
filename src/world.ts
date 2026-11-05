@@ -521,7 +521,7 @@ export class MemoryCoreWorld implements World {
         return this.state;
       },
       planAction: (input: Record<string, unknown>) => {
-        this.handlePlan({ action: input.action, items: input.items, id: input.id });
+        this.handlePlan({ action: input.action, items: input.items, id: input.id, time: input.time, title: input.title, place: input.place });
         return { plans: this.plans };
       },
       exportAll: (fmt: string) => this.exportAll(fmt),
@@ -895,9 +895,14 @@ export class MemoryCoreWorld implements World {
   private handlePlan(args: Record<string, unknown>): string {
     const action = String(args.action ?? 'list');
     if (action === 'add') {
-      const items = Array.isArray(args.items) ? args.items : [];
+      // 参数是平的（time/title/place）；老调用方传 items 数组也认，一次最多 8 项
+      const list: unknown[] = Array.isArray(args.items)
+        ? args.items
+        : args.time || args.title
+          ? [{ time: args.time, title: args.title, place: args.place }]
+          : [];
       let added = 0;
-      for (const raw of items.slice(0, 8)) {
+      for (const raw of list.slice(0, 8)) {
         const item = raw as Record<string, unknown>;
         const time = str(item.time, 5);
         const title = str(item.title, 40);

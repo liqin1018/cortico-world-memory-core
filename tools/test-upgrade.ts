@@ -4,11 +4,15 @@
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CardStore, RawLog } from '../src/store.ts';
 import { rankCards, rankRaw } from '../src/recall.ts';
 import { MemoryCoreWorld } from '../src/world.ts';
 import { MEMORY_CORE_DEFAULTS } from '../src/config.ts';
+import { TOOL_SPECS } from '../src/tools.ts';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 let bad = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -427,6 +431,37 @@ const ok = (cond: boolean, msg: string) => {
   await internals.deliverNightly();
   ok(pushed.length === 1, '15) 不会重复交付');
   await world.stop();
+}
+
+/* 16) 日程参数改平 + 常驻体积守门 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-plan-'));
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const plan = world.tools().find((t) => t.name === 'mcore_plan')!;
+
+  const flat = String(await plan.handler({ action: 'add', time: '09:30', title: '吃早饭' }));
+  ok(flat.includes('加了 1 项'), '16) 扁平参数（time/title）能加日程');
+  const legacy = String(await plan.handler({ action: 'add', items: [{ time: '10:00', title: '看医生' }] }));
+  ok(legacy.includes('加了 1 项'), '16) 老的 items 数组仍然兼容');
+  const list = String(await plan.handler({ action: 'list' }));
+  ok(list.includes('吃早饭') && list.includes('看医生'), '16) 两条都在');
+  await world.stop();
+
+  const write = TOOL_SPECS.find((t) => t.name === 'mcore_write')!;
+  const required = (write.parameters as { required?: string[] }).required ?? [];
+  ok(required.includes('kind') && required.includes('text'), '16) 写入的必填项没丢');
+
+  // 常驻成本守门：改 schema 时别不知不觉又胖回去
+  const schemaChars = TOOL_SPECS.reduce((n, t) => n + JSON.stringify(t).length, 0);
+  const promptChars = readFileSync(join(root, 'ENV_PROMPT.md'), 'utf8').trim().length;
+  ok(schemaChars <= 2600, `16) schema ≤ 2600 字符（现在 ${schemaChars}）`);
+  ok(promptChars <= 480, `16) 提示词 ≤ 480 字（现在 ${promptChars}）`);
 }
 
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');
