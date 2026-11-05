@@ -3,7 +3,7 @@
  * 跑：node --experimental-transform-types --no-warnings tools/demo-server.ts
  * 数据落在临时目录里，不碰真实记忆。
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,6 +127,17 @@ writeFileSync(
     .map(([sender, text, hours], i) => JSON.stringify({ cursor: i + 1, ts: new Date(now - Number(hours) * 3600000).toISOString(), sender, text }))
     .join('\n') + '\n',
 );
+
+// 归档里的旧句子：演示「含归档」开关和 ?q= 深链接
+mkdirSync(join(work, 'memory-core', 'archive'), { recursive: true });
+for (const row of [
+  { cursor: 9001, ts: ago(38, 2), sender: '阿岚', text: '回民街那家泡馍店，你说下次带我去的那家，别记错了。' },
+  { cursor: 9002, ts: ago(38, 1), sender: '阿岚', text: '那天下雨，伞落在店里了，第二天才想起来。' },
+]) {
+  const d = new Date(Date.parse(row.ts));
+  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  appendFileSync(join(work, 'memory-core', 'archive', `${key}.jsonl`), `${JSON.stringify(row)}\n`, 'utf8');
+}
 
 const writeDrive = () => {
   const file = join(root, 'webui', '_drive.html');

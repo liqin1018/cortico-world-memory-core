@@ -385,7 +385,7 @@ export class MemoryCoreWorld implements World {
         scopes: this.store.scopes(),
       },
       docs: { enabled: Boolean(cfg.workspaceScanEnabled), count: docs.length, dirs: cfg.workspaceScanEnabled ? expandDirs(cfg.workspaceDirs, this.ctx.botDir) : [] },
-      archive: this.raw.stats(),
+      archive: { ...this.raw.stats(), retention: Math.max(0, Number(cfg.rawArchiveDays) || 0) },
       site: { port: origin ? Number(new URL(origin).port) : 0, origin },
     };
   }
@@ -456,6 +456,13 @@ export class MemoryCoreWorld implements World {
       }),
       health: () => this.healthReport(),
       importData: (payload: Record<string, unknown>) => this.importBackup(payload),
+      archiveSearch: (q: string, days: number, limit: number) => {
+        const query = String(q ?? '').trim();
+        if (!query) return [];
+        const span = Math.min(3650, Math.max(1, Number(days) || 90));
+        const cap = Math.min(50, Math.max(1, Number(limit) || 40));
+        return rankRaw(this.raw.readArchive(span, 20000), query, cap);
+      },
       mergeCards: (keepId: string, dropIds: string[]) => this.store.merge(keepId, dropIds),
       purgeCards: (ids: string[]) => this.store.purge(ids),
       patchState: (input: Record<string, unknown>) => {

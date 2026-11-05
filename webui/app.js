@@ -34,6 +34,9 @@ const S = {
   scope: null,
   maintenance: null,
   health: null,
+  withArchive: localStorage.getItem('mcore-archive') === '1',
+  archive: null,
+  archiveQ: '',
   turnsLimit: TURNS_PAGE,
 };
 
@@ -1152,20 +1155,80 @@ function renderTable() {
 
 /* ── 对话原文 ───────────────────────────────────────── */
 
+function archiveBar() {
+  const retention = S.snap?.archive?.retention ?? 90;
+  const hint = S.withArchive
+    ? `连${retention ? ` ${retention} 天内` : '全部'}的归档一起搜`
+    : '只搜最近 7 天；更早的句子在归档里，勾上就能搜到';
+  return `<div class="turns-bar">
+    <label class="switch"><input type="checkbox" id="turns-archive" ${S.withArchive ? 'checked' : ''} /><span>含归档</span></label>
+    <span class="dim">${hint}</span>
+  </div>`;
+}
+
+function turnRow(t) {
+  return `<div class="turn">
+    <div><time>${fmtTime(t.ts).slice(6)}</time><div class="who">${esc(shortSender(t.sender))}</div></div>
+    <div class="msg">${highlight(t.text.slice(0, 600), S.query)}</div>
+  </div>`;
+}
+
+function bindArchiveToggle() {
+  const box = $('#turns-archive');
+  if (!box) return;
+  box.addEventListener('change', () => {
+    S.withArchive = box.checked;
+    localStorage.setItem('mcore-archive', S.withArchive ? '1' : '0');
+    S.archive = null;
+    S.archiveQ = '';
+    renderTurns();
+    if (S.withArchive && S.query) void ensureArchive(S.query);
+  });
+}
+
+/** 归档不进快照，勾了「含归档」且有搜索词时才按需拉一次。 */
+async function ensureArchive(query) {
+  if (!S.withArchive || !query) return;
+  if (S.archiveQ === query && S.archive) return;
+  S.archiveQ = query;
+  S.archive = null;
+  const days = S.snap?.archive?.retention || 3650;
+  try {
+    const rows = await api(`/api/archive?q=${encodeURIComponent(query)}&days=${days}&limit=40`);
+    if (S.query !== query) return;
+    S.archive = Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    if (S.query !== query) return;
+    S.archive = [];
+    toast(`翻归档失败：${err.message}`, true);
+  }
+  if (S.view === 'turns') renderTurns();
+}
+
 function renderTurns() {
   const host = $('#view-turns');
   const toks = tokens(S.query);
   const matched = (S.snap?.turns ?? []).filter((t) => matches(t.text, toks)).slice().reverse();
-  if (!matched.length) {
+  const wantArchive = S.withArchive && Boolean(S.query);
+  const archiving = wantArchive && (S.archiveQ !== S.query || S.archive === null);
+  const archived = wantArchive && S.archiveQ === S.query ? (S.archive ?? []) : [];
+
+  if (!matched.length && !archived.length && !archiving) {
     const dbg = S.snap?.state?.captureDebug;
     let hint = '在插件设置里确认「存对话原文」是开的，聊几句就会出现在这里。';
     if (dbg && dbg.scanned && !dbg.kept) {
       const keys = (dbg.keys ?? []).map((k) => esc(k)).join('、') || '无';
       hint = `上次扫了 ${dbg.scanned} 条外部事件，一条都没留下——被「算作对话的来源」白名单挡掉了（样例：${keys}），把这几个 key 加进设置里的正则就行。`;
     }
-    host.innerHTML = `<div class="turns-wrap"><div class="empty"><p>${S.query ? '没有匹配的对话。' : '还没有存下对话原文。'}</p><p class="dim">${
-      S.query ? '' : hint
-    }</p></div></div>`;
+    const sub = S.query
+      ? S.withArchive
+        ? '归档里也没有。'
+        : '最近 7 天里没有。更早的句子在归档里，勾上「含归档」再搜一次。'
+      : hint;
+    host.innerHTML = `<div class="turns-wrap">${archiveBar()}<div class="empty"><p>${
+      S.query ? '没有匹配的对话。' : '还没有存下对话原文。'
+    }</p><p class="dim">${sub}</p></div></div>`;
+    bindArchiveToggle();
     return;
   }
   // 全量拼 DOM 在 1000 条时会明显卡：先渲染最近 200 条，要更多再点。
@@ -1188,25 +1251,41 @@ function renderTurns() {
         <div class="day-head"><b>${dayLabel(key)}</b><span>${
           take.length === items.length ? `${items.length} 条` : `${take.length} / ${items.length} 条`
         }</span></div>
-        ${take
-          .map(
-            (t) => `<div class="turn">
-              <div><time>${fmtTime(t.ts).slice(6)}</time><div class="who">${esc(shortSender(t.sender))}</div></div>
-              <div class="msg">${highlight(t.text.slice(0, 600), S.query)}</div>
-            </div>`,
-          )
-          .join('')}
+        ${take.map(turnRow).join('')}
       </div>`);
   }
+  // 归档命中按天分组：行里只显示时分，日期靠组头，避免窄列里塞不下「09-28 08:22」
+  const archGroups = new Map();
+  for (const t of archived) {
+    const key = dayKey(t.ts);
+    if (!archGroups.has(key)) archGroups.set(key, []);
+    archGroups.get(key).push(t);
+  }
+  const archiveBlock = archiving
+    ? '<div class="day-group archive"><div class="day-head"><b>更早 · 归档</b><span>搜索中…</span></div></div>'
+    : archGroups.size
+      ? `<div class="archive-head">更早 · 归档<span>${archived.length} 条</span></div>${[...archGroups.entries()]
+          .map(
+            ([key, items]) => `<div class="day-group archive">
+              <div class="day-head"><b>${dayLabel(key)}</b><span>${items.length} 条</span></div>
+              ${items.map((t) => turnRow(t)).join('')}
+            </div>`,
+          )
+          .join('')}`
+      : wantArchive
+        ? '<p class="turns-none dim">归档里没有匹配的句子。</p>'
+        : '';
   const more =
     matched.length > limit
       ? `<button class="btn turns-more" id="turns-more">还有 ${matched.length - limit} 条 · 继续加载</button>`
       : '';
-  host.innerHTML = `<div class="turns-wrap">${parts.join('')}${more}</div>`;
+  host.innerHTML = `<div class="turns-wrap">${archiveBar()}${parts.join('')}${archiveBlock}${more}</div>`;
+  bindArchiveToggle();
   $('#turns-more')?.addEventListener('click', () => {
     S.turnsLimit = limit + TURNS_PAGE;
     renderTurns();
   });
+  if (archiving) void ensureArchive(S.query);
 }
 
 function shortSender(key) {
@@ -1841,16 +1920,20 @@ document.addEventListener('keydown', (event) => {
 let searchTimer = 0;
 el.search.addEventListener('input', () => {
   S.query = el.search.value;
-  S.searchClear.hidden = !S.query;
+  el.searchClear.hidden = !S.query;
   S.turnsLimit = TURNS_PAGE;
+  S.archive = null;
+  S.archiveQ = '';
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => render(), 150);
 });
 el.searchClear.addEventListener('click', () => {
   S.query = '';
   el.search.value = '';
-  S.searchClear.hidden = true;
+  el.searchClear.hidden = true;
   S.turnsLimit = TURNS_PAGE;
+  S.archive = null;
+  S.archiveQ = '';
   clearTimeout(searchTimer);
   render();
 });
@@ -2256,6 +2339,16 @@ el.inspStub.addEventListener('click', () => {
 const bootParams = new URLSearchParams(location.search);
 const bootView = bootParams.get('view') ?? localStorage.getItem('mcore-view');
 if (['graph', 'timeline', 'table', 'turns', 'docs', 'health'].includes(bootView)) S.view = bootView;
+const bootQuery = bootParams.get('q');
+if (bootQuery) {
+  S.query = bootQuery;
+  el.search.value = bootQuery;
+  el.searchClear.hidden = false;
+}
+if (bootParams.get('archive') === '1') {
+  S.withArchive = true;
+  localStorage.setItem('mcore-archive', '1');
+}
 await load();
 const bootCard = bootParams.get('card');
 if (bootCard && cards().some((c) => c.id === bootCard)) {

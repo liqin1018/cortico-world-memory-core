@@ -5,7 +5,8 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CardStore } from '../src/store.ts';
+import { CardStore, RawLog } from '../src/store.ts';
+import { rankRaw } from '../src/recall.ts';
 import { MemoryCoreWorld } from '../src/world.ts';
 import { MEMORY_CORE_DEFAULTS } from '../src/config.ts';
 
@@ -134,6 +135,22 @@ const ok = (cond: boolean, msg: string) => {
   ok((world as unknown as { state: { rawWatermark?: number } }).state.rawWatermark === 5000, '6) 水位只往前推，不会被旧备份倒回去');
 
   await world.stop();
+}
+
+/* 7) 归档检索：热数据之外的旧句子要能按关键词翻回来 */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-arch-'));
+  const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+  const log = new RawLog(dir, 7, 90);
+  log.add([
+    { cursor: 1, ts: old, sender: 'private:1', text: '回民街那家泡馍店，你说下次带我去的那家' },
+    { cursor: 2, ts: new Date().toISOString(), sender: 'private:1', text: '今天天气不错' },
+  ]);
+  ok(log.size === 1, `7) 只有热数据留在 turns.jsonl（${log.size} 行）`);
+  const hits = rankRaw(log.readArchive(90, 5000), '泡馍店', 5);
+  ok(hits.length === 1 && hits[0].text.includes('泡馍'), '7) 归档里的旧句子能搜到');
+  const outside = rankRaw(log.readArchive(30, 5000), '泡馍店', 5);
+  ok(outside.length === 0, '7) 窗口外的归档不返回');
 }
 
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');

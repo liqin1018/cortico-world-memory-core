@@ -15,8 +15,8 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'mcore_write',
     description:
-      '写一条记忆。kind：fact=关于对方的事实，self=关于你自己的，episode=发生过的一件事（带感受），'
-      + 'promise=答应过的事（写 dueAt），note=过几天就没用的临时信息。'
+      '写一条记忆。kind：fact=关于对方的事实，self=关于你自己的，episode=会改变你怎么看她的一件事（别记流水账），'
+      + 'promise=答应过的事（必须写 dueAt），note=过几天就没用的临时信息。能写成 fact 就别写成 episode。'
       + '一条只写一件事，40-80 字，写具体。同一件事不要重复写；把旧记录传进 closes 表示它已完成或作废。',
     parameters: obj(
       {

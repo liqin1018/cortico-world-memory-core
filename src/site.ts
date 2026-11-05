@@ -51,7 +51,7 @@ export interface Snapshot {
     scopes: Array<{ scope: string; n: number }>;
   };
   docs: { enabled: boolean; count: number; dirs: string[] };
-  archive: { days: number; bytes: number; oldest: string };
+  archive: { days: number; bytes: number; oldest: string; retention: number };
   site: { port: number; origin: string };
 }
 
@@ -98,6 +98,8 @@ export interface SiteHooks {
   purgeCards(ids: string[]): number;
   health(): HealthReport;
   importData(payload: Record<string, unknown>): ImportReport;
+  /** 在按天归档的旧原文里搜（页面上的「含归档」开关）。 */
+  archiveSearch(q: string, days: number, limit: number): RawEntry[];
   patchState(input: Record<string, unknown>): CoreState;
   planAction(input: Record<string, unknown>): unknown;
   exportAll(fmt: string): { body: string; mime: string; filename: string };
@@ -224,6 +226,12 @@ export class MemorySite {
     }
     if (path === '/api/health' && req.method === 'GET') {
       return this.json(rsp, 200, this.hooks.health());
+    }
+    if (path === '/api/archive' && req.method === 'GET') {
+      const q = (url.searchParams.get('q') ?? '').trim();
+      const days = Number(url.searchParams.get('days') ?? 90) || 90;
+      const limit = Number(url.searchParams.get('limit') ?? 40) || 40;
+      return this.json(rsp, 200, q ? this.hooks.archiveSearch(q, days, limit) : []);
     }
     if (path === '/api/import' && req.method === 'POST') {
       let body: Record<string, unknown>;
