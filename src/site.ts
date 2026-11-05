@@ -27,6 +27,8 @@ const MIME: Record<string, string> = {
 
 const MAX_PORT_TRIES = 10;
 const MAX_BODY = 512 * 1024;
+/** 导入的是整包备份，比日常请求大得多。 */
+const MAX_IMPORT = 32 * 1024 * 1024;
 
 export interface Snapshot {
   now: string;
@@ -58,6 +60,27 @@ export interface MaintenanceReport {
   stale: string[];
   junk: string[];
   retired: string[];
+  /** 承诺：没写截止时间的提醒管线管不到；overdue 是已过期还没做的。 */
+  promises: { noDue: string[]; overdue: string[] };
+}
+
+export interface HealthReport {
+  generatedAt: string;
+  cards: { total: number; active: number; retired: number; dead: number };
+  recall: { calls: number; cardsTouched: number };
+  perDay: Array<{ day: string; n: number }>;
+  promises: { open: number; overdue: number; noDue: number; repeating: number };
+  raw: { lines: number; archivedDays: number; archivedLines: number };
+  backup: { count: number; latest: string | null; dir: string };
+  deadIds: string[];
+}
+
+export interface ImportReport {
+  cards: { added: number; skipped: number };
+  turns: { added: number; skipped: number };
+  plans: { added: number; skipped: number };
+  state: { watermark: number };
+  warnings: string[];
 }
 
 export interface SiteHooks {
@@ -73,6 +96,8 @@ export interface SiteHooks {
   maintenance(): MaintenanceReport;
   mergeCards(keepId: string, dropIds: string[]): { kept: Card | null; merged: number };
   purgeCards(ids: string[]): number;
+  health(): HealthReport;
+  importData(payload: Record<string, unknown>): ImportReport;
   patchState(input: Record<string, unknown>): CoreState;
   planAction(input: Record<string, unknown>): unknown;
   exportAll(fmt: string): { body: string; mime: string; filename: string };
@@ -197,6 +222,22 @@ export class MemorySite {
       const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map((x) => String(x)) : [];
       return this.json(rsp, 200, { removed: this.hooks.purgeCards(ids) });
     }
+    if (path === '/api/health' && req.method === 'GET') {
+      return this.json(rsp, 200, this.hooks.health());
+    }
+    if (path === '/api/import' && req.method === 'POST') {
+      let body: Record<string, unknown>;
+      try {
+        body = await this.body(req, MAX_IMPORT);
+      } catch (err) {
+        return this.json(rsp, 400, { error: err instanceof Error ? err.message : '读不了请求体' });
+      }
+      try {
+        return this.json(rsp, 200, this.hooks.importData(body));
+      } catch (err) {
+        return this.json(rsp, 400, { error: err instanceof Error ? err.message : '导入失败' });
+      }
+    }
     const actionMatch = /^\/api\/cards\/([\w-]{1,60})\/(retire|restore|lineage)$/.exec(path);
     if (actionMatch) {
       const [, id, action] = actionMatch;
@@ -274,13 +315,13 @@ export class MemorySite {
     }
   }
 
-  private readBody(req: IncomingMessage): Promise<string> {
+  private readBody(req: IncomingMessage, limit = MAX_BODY): Promise<string> {
     return new Promise((res, rej) => {
       let size = 0;
       const chunks: Buffer[] = [];
       req.on('data', (chunk: Buffer) => {
         size += chunk.length;
-        if (size > MAX_BODY) {
+        if (size > limit) {
           rej(new Error('请求体太大'));
           req.destroy();
           return;
@@ -292,8 +333,8 @@ export class MemorySite {
     });
   }
 
-  private async body(req: IncomingMessage): Promise<Record<string, unknown>> {
-    const raw = await this.readBody(req);
+  private async body(req: IncomingMessage, limit = MAX_BODY): Promise<Record<string, unknown>> {
+    const raw = await this.readBody(req, limit);
     if (!raw.trim()) return {};
     try {
       const parsed = JSON.parse(raw) as unknown;

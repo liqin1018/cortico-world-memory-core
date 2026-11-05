@@ -663,3 +663,39 @@ kbd {
   .inspector { display: none; }
   .kbd-hints { display: none; }
 }
+
+/* ── 体检 ───────────────────────────────────────────── */
+.toast { display: inline-flex; align-items: center; gap: 8px; }
+.toast-undo {
+  background: transparent; border: 1px solid currentColor; color: inherit;
+  border-radius: 6px; font-size: 12px; padding: 2px 8px; cursor: pointer;
+}
+.health-wrap { height: 100%; overflow-y: auto; padding: 16px 18px 48px; display: grid; gap: 18px; align-content: start; }
+.h-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.h-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--sheet); padding: 12px 14px; }
+.h-card.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.h-label { font-size: 11px; color: var(--ink-dim); }
+.h-value { font-size: 26px; line-height: 1.3; font-family: var(--mono); color: var(--ink); }
+.h-card.warn .h-value { color: var(--warn); }
+.h-hint { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
+.h-block h3 {
+  font-size: 12px; font-weight: 500; color: var(--ink-soft);
+  margin: 0 0 8px; display: flex; align-items: center; gap: 10px;
+}
+.h-chart { display: flex; align-items: flex-end; gap: 4px; height: 112px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+.h-bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 3px; height: 100%; }
+.h-bar i { display: block; width: 100%; max-width: 26px; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.h-bar b { font-size: 10px; font-weight: 400; color: var(--ink-dim); }
+.h-bar span { font-size: 9.5px; color: var(--ink-dim); }
+.h-line { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; font-size: 12px; color: var(--ink-soft); }
+.h-line b { color: var(--ink); font-family: var(--mono); }
+.h-line .warn { color: var(--warn); }
+.h-line .dim { color: var(--ink-dim); font-size: 11px; }
+.maint-list { display: grid; gap: 2px; }
+.maint-row.wide { grid-template-columns: minmax(0, 1fr); }
+.maint-row.wide .maint-act { justify-content: flex-end; padding-top: 2px; }
+.due-input {
+  background: var(--paper); border: 1px solid var(--line-2); color: var(--ink);
+  font-size: 11px; border-radius: 6px; padding: 3px 6px; font-family: var(--mono);
+  width: 188px;
+}

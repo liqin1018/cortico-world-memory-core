@@ -18,6 +18,8 @@ export interface MemoryCoreConfig {
   idleGateMin: number;
   /** 只有最近这么多小时内对方说过话才主动（0 = 不限制）。 */
   requireRecentUserHours: number;
+  /** 承诺到期后，隔多少天可以再提醒一次（0 = 只提醒一次）。 */
+  promiseRepeatDays: number;
   /** 免打扰开始（含）。 */
   quietStart: string;
   /** 免打扰结束（不含）。 */
@@ -44,6 +46,8 @@ export interface MemoryCoreConfig {
   recallLimit: number;
   /** 召回结果的总字数上限。 */
   recallMaxChars: number;
+  /** 排序时是否参考「上次被想起的时间」：久不用的旧卡不抢新卡的位。 */
+  recallUseAging: boolean;
   /** 每隔多少分钟把状态作为一条事件投递一次（0 = 不投递，最省）。 */
   contextEveryMin: number;
   /** 夜间是否唤醒一轮让角色整理记忆（会多一次完整请求）。 */
@@ -76,6 +80,7 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   proactiveDailyCap: 3,
   idleGateMin: 20,
   requireRecentUserHours: 8,
+  promiseRepeatDays: 0,
   quietStart: '23:30',
   quietEnd: '08:00',
   sleepStart: '01:00',
@@ -91,6 +96,7 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   captureBackfill: false,
   recallLimit: 5,
   recallMaxChars: 600,
+  recallUseAging: true,
   contextEveryMin: 0,
   nightlyConsolidate: false,
   nightlyHour: 3,
@@ -140,6 +146,7 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       'worlds.memory-core.proactiveDailyCap': num('每天主动上限', '每次主动都是一次完整请求，3 次约等于 30 万 token。0 = 不限。', 0, 12, '次'),
       'worlds.memory-core.idleGateMin': num('对方刚说话后的静默', '窗口内不主动，免得打断。', 0, 240, '分钟'),
       'worlds.memory-core.requireRecentUserHours': num('对方多久没说话就不主动', '超过这个时长就当没人在，主动会对着空房间说话、白花钱。0 = 不限制。', 0, 72, '小时'),
+      'worlds.memory-core.promiseRepeatDays': num('承诺隔几天再提一次', '到期提醒过一次之后，隔这么多天可以再提。0 = 只提醒一次（默认，和旧版行为一致）。', 0, 30, '天'),
       'worlds.memory-core.quietStart': {
         type: 'string',
         title: '免打扰开始',
@@ -192,6 +199,11 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       },
       'worlds.memory-core.recallLimit': num('一次召回给几条', '默认 5 条。给多了挤占上下文。', 1, 12, '条'),
       'worlds.memory-core.recallMaxChars': num('召回结果字数上限', '超过就截断，默认 600 字。', 120, 2000, '字'),
+      'worlds.memory-core.recallUseAging': {
+        type: 'boolean',
+        title: '久不用的记忆让位',
+        description: '排序时参考「上次被想起的时间」：长期没被召回、权重又低的卡排到后面。关掉就退回只看关键词、标签和权重。',
+      },
       'worlds.memory-core.contextEveryMin': num('状态投递间隔', '每隔这么多分钟把「我在做什么」推到上下文里。0 = 不推（默认，最省）；推一次约 60 token，但每轮都在历史里。', 0, 240, '分钟'),
       'worlds.memory-core.nightlyConsolidate': {
         type: 'boolean',

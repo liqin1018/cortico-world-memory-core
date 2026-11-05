@@ -33,6 +33,7 @@ const S = {
   status: 'active', // active | all | retired
   scope: null,
   maintenance: null,
+  health: null,
   turnsLimit: TURNS_PAGE,
 };
 
@@ -157,8 +158,47 @@ function toast(msg, isErr = false) {
   }, isErr ? 4200 : 1900);
 }
 
-async function api(path, init = {}) {
-  const res = await fetch(path, {
+/** 带撤销按钮的提示条：10 秒内点一下，把刚才删的整包灌回来。 */
+function toastUndo(msg, onUndo, ms = 10000) {
+  el.toast.innerHTML = `<span>${esc(msg)}</span><button type="button" class="toast-undo">撤销</button>`;
+  el.toast.classList.remove('err');
+  el.toast.hidden = false;
+  clearTimeout(toast._t);
+  el.toast.querySelector('.toast-undo')?.addEventListener('click', async () => {
+    el.toast.hidden = true;
+    clearTimeout(toast._t);
+    await onUndo();
+  });
+  toast._t = setTimeout(() => {
+    el.toast.hidden = true;
+  }, ms);
+}
+
+/**
+ * 彻底删除：先把要删的摆出来确认，删完 10 秒内可撤销。
+ * 撤销走 /api/import（只加不覆盖），所以不会把后来新写的记忆冲掉。
+ */
+async function purgeWithUndo(ids) {
+  const victims = ids.map((id) => cards().find((c) => c.id === id)).filter(Boolean);
+  if (!victims.length) return 0;
+  const preview = victims.slice(0, 5).map((c) => `· ${c.text.slice(0, 40)}`).join('\n');
+  const more = victims.length > 5 ? `\n…还有 ${victims.length - 5} 条` : '';
+  if (!confirm(`彻底删除这 ${victims.length} 条？\n\n${preview}${more}\n\n删了之后 10 秒内可以撤销。`)) return 0;
+  const res = await api('/api/purge', { method: 'POST', body: JSON.stringify({ ids }) });
+  const removed = Number(res.removed ?? 0);
+  toastUndo(`删了 ${removed} 条`, async () => {
+    try {
+      await api('/api/import', { method: 'POST', body: JSON.stringify({ cards: victims }) });
+      await load();
+      toast('已撤销');
+    } catch (err) {
+      toast(`撤销失败：${err.message}`, true);
+    }
+  });
+  return removed;
+}
+
+async function api(path, init = {}) {  const res = await fetch(path, {
     ...init,
     headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
   });
@@ -1558,6 +1598,118 @@ async function patchCard(id, patch, msg) {
   }
 }
 
+/* ── 体检 ───────────────────────────────────────────── */
+
+async function ensureHealth() {
+  if (S.health) return;
+  try {
+    S.health = await api('/api/health');
+    if (S.view === 'health') renderHealth();
+  } catch (err) {
+    toast(`体检读不出来：${err.message}`, true);
+  }
+}
+
+function healthCard(label, value, hint, tone = '') {
+  return `<div class="h-card ${tone}">
+    <div class="h-label">${esc(label)}</div>
+    <div class="h-value">${value}</div>
+    <div class="h-hint">${esc(hint)}</div>
+  </div>`;
+}
+
+function renderHealth() {
+  const host = $('#view-health');
+  const h = S.health;
+  if (!h) {
+    host.innerHTML = '<div class="empty"><p>正在算…</p></div>';
+    return;
+  }
+  const maxN = Math.max(1, ...h.perDay.map((d) => d.n));
+  const bars = h.perDay
+    .map(
+      (d) => `<div class="h-bar" title="${d.day} · ${d.n} 条">
+        <i style="height:${Math.max(2, Math.round((d.n / maxN) * 100))}%"></i>
+        <b>${d.n}</b>
+        <span>${d.day.slice(5).replace('-', '/')}</span>
+      </div>`,
+    )
+    .join('');
+  const dead = h.deadIds.map((id) => cards().find((c) => c.id === id)).filter(Boolean);
+  const deadRows = dead
+    .slice(0, 20)
+    .map(
+      (c) => `<div class="maint-row" data-id="${c.id}">
+        <div class="maint-main">
+          <span class="kind-pill"><i style="background:var(${kindOf(c.kind).css})"></i>${kindOf(c.kind).label}</span>
+          <span class="maint-text" title="${esc(c.text)}">${esc(c.text.slice(0, 80))}${c.text.length > 80 ? '…' : ''}</span>
+          <span class="maint-meta">${relative(c.createdAt)} · ${c.weight.toFixed(2)}</span>
+        </div>
+      </div>`,
+    )
+    .join('');
+  host.innerHTML = `<div class="health-wrap">
+    <div class="h-grid">
+      ${healthCard('在用记忆', h.cards.active, `另有 ${h.cards.retired} 条已退休`)}
+      ${healthCard('从没被召回', h.cards.dead, '建了 7 天以上、一次都没被搜到', h.cards.dead > h.cards.active * 0.5 ? 'warn' : '')}
+      ${healthCard('召回次数', h.recall.calls, `${h.recall.cardsTouched} 张卡被用过`)}
+      ${healthCard('对话原文', h.raw.lines, `归档 ${h.raw.archivedLines} 行 · ${h.raw.archivedDays} 天`)}
+    </div>
+
+    <section class="h-block">
+      <h3>近 14 天新增</h3>
+      <div class="h-chart">${bars}</div>
+    </section>
+
+    <section class="h-block">
+      <h3>承诺</h3>
+      <div class="h-line">
+        <span>未完成 <b>${h.promises.open}</b></span>
+        <span class="${h.promises.overdue ? 'warn' : ''}">已过时间 <b>${h.promises.overdue}</b></span>
+        <span class="${h.promises.noDue ? 'warn' : ''}">没有截止时间 <b>${h.promises.noDue}</b></span>
+        <span class="dim">${h.promises.repeating ? `每 ${h.promises.repeating} 天重提一次` : '只提醒一次'}</span>
+        ${h.promises.noDue ? '<button class="btn tiny" id="h-fix-promises">去补时间</button>' : ''}
+      </div>
+    </section>
+
+    <section class="h-block">
+      <h3>备份</h3>
+      <div class="h-line">
+        <span>${h.backup.count ? `本地有 <b>${h.backup.count}</b> 份，最新 <b>${esc(h.backup.latest ?? '')}</b>` : '还没有备份，下次写入时会自动生成'}</span>
+        <span class="dim">${esc(h.backup.dir)}</span>
+      </div>
+    </section>
+
+    <section class="h-block">
+      <h3>从没被召回的卡 ${h.cards.dead ? `<button class="btn tiny" id="h-retire-dead">全部退休（${h.cards.dead}）</button>` : ''}</h3>
+      ${
+        dead.length
+          ? `<div class="maint-list">${deadRows}</div>${dead.length > 20 ? `<p class="dim">还有 ${dead.length - 20} 条没列出来。</p>` : ''}`
+          : '<p class="maint-empty">没有。每张卡都被搜到过。</p>'
+      }
+    </section>
+  </div>`;
+
+  const fix = $('#h-fix-promises');
+  if (fix) fix.addEventListener('click', () => void openMaintenance('promises'));
+  const retireDead = $('#h-retire-dead');
+  if (retireDead) {
+    retireDead.addEventListener('click', async () => {
+      const ids = h.deadIds.slice();
+      if (!ids.length) return;
+      if (!confirm(`把 ${ids.length} 张从没被召回的卡标成退休？不删除，随时能在回收站恢复。`)) return;
+      try {
+        for (const id of ids) await api(`/api/cards/${id}/retire`, { method: 'POST', body: '{}' });
+        S.health = null;
+        await load();
+        toast(`${ids.length} 张已退休`);
+      } catch (err) {
+        toast(`失败：${err.message}`, true);
+      }
+    });
+  }
+}
+
 /* ── 视图切换与渲染 ─────────────────────────────────── */
 
 function renderStage() {
@@ -1567,6 +1719,7 @@ function renderStage() {
   $('#view-table').hidden = S.view !== 'table';
   $('#view-turns').hidden = S.view !== 'turns';
   $('#view-docs').hidden = S.view !== 'docs';
+  $('#view-health').hidden = S.view !== 'health';
   document.querySelectorAll('#tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.view === S.view));
 
   if (S.view === 'graph') renderGraph();
@@ -1576,6 +1729,10 @@ function renderStage() {
   if (S.view === 'docs') {
     renderDocs();
     ensureDocs();
+  }
+  if (S.view === 'health') {
+    renderHealth();
+    void ensureHealth();
   }
 }
 
@@ -1672,8 +1829,8 @@ document.addEventListener('keydown', (event) => {
     if (!S.inspCollapsed) renderInspector();
     return;
   }
-  if (['1', '2', '3', '4', '5'].includes(event.key)) {
-    const views = ['graph', 'timeline', 'table', 'turns', 'docs'];
+  if (['1', '2', '3', '4', '5', '6'].includes(event.key)) {
+    const views = ['graph', 'timeline', 'table', 'turns', 'docs', 'health'];
     S.view = views[Number(event.key) - 1];
     return render();
   }
@@ -1741,9 +1898,9 @@ async function openMaintenance(tab = 'dupes') {
   renderMaintenance(tab);
 }
 
-function maintRow(card, actions) {
+function maintRow(card, actions, extraClass = '') {
   const k = kindOf(card.kind);
-  return `<div class="maint-row" data-id="${card.id}">
+  return `<div class="maint-row ${extraClass}" data-id="${card.id}">
     <div class="maint-main">
       <span class="kind-pill"><i style="background:var(${k.css})"></i>${k.label}</span>
       <span class="maint-text" title="${esc(card.text)}">${esc(card.text.slice(0, 90))}${card.text.length > 90 ? '…' : ''}</span>
@@ -1757,10 +1914,12 @@ function renderMaintenance(tab) {
   const m = S.maintenance;
   const byId = (id) => cards().find((c) => c.id === id);
   const rows = (ids) => ids.map(byId).filter(Boolean);
+  const prom = m.promises ?? { noDue: [], overdue: [] };
   const tabs = [
     ['dupes', '重复', m.dupes.length],
     ['stale', '疑似作废', m.stale.length],
     ['junk', '垃圾', m.junk.length],
+    ['promises', '承诺', prom.noDue.length + prom.overdue.length],
     ['retired', '回收站', m.retired.length],
   ];
   let content = '';
@@ -1796,6 +1955,38 @@ function renderMaintenance(tab) {
       ? list.map((c) => maintRow(c, `<button class="btn tiny" data-retire="${c.id}">退休</button><button class="btn tiny danger" data-purge="${c.id}">删除</button>`)).join('')
       : '<p class="maint-empty">没有垃圾。太短、纯表情、`[取消]` 这类回执会出现在这里。</p>';
     if (list.length) bulk = `<button class="btn tiny danger" data-bulk="junk">全部删除（${list.length}）</button>`;
+  } else if (tab === 'promises') {
+    const noDue = rows(prom.noDue);
+    const overdue = rows(prom.overdue);
+    const blocks = [];
+    if (noDue.length) {
+      blocks.push(`<div class="maint-group">
+        <div class="maint-group-head">没写截止时间 · 提醒管线管不到（${noDue.length}）</div>
+        ${noDue
+          .map((c) =>
+            maintRow(
+              c,
+              `<input class="due-input" type="datetime-local" data-due="${c.id}" aria-label="截止时间" />
+               <button class="btn tiny" data-save-due="${c.id}">补上</button>`,
+              'wide',
+            ),
+          )
+          .join('')}
+      </div>`);
+    }
+    if (overdue.length) {
+      blocks.push(`<div class="maint-group">
+        <div class="maint-group-head">已过时间 · 还没做（${overdue.length}）</div>
+        ${overdue
+          .map((c) =>
+            maintRow(c, `<button class="btn tiny" data-done="${c.id}">标记做完</button><button class="btn tiny" data-retire="${c.id}">退休</button>`, 'wide'),
+          )
+          .join('')}
+      </div>`);
+    }
+    content = blocks.length
+      ? blocks.join('')
+      : '<p class="maint-empty">没有要补的承诺。写承诺时必须带截止时间，到点会提一次。</p>';
   } else {
     const list = rows(m.retired);
     content = list.length
@@ -1865,10 +2056,39 @@ function renderMaintenance(tab) {
     .querySelectorAll('[data-purge]')
     .forEach((btn) =>
       btn.addEventListener('click', async () => {
-        if (!confirm('彻底删除这条？删了就找不回来了。')) return;
         try {
-          await api('/api/purge', { method: 'POST', body: JSON.stringify({ ids: [btn.dataset.purge] }) });
-          await refresh('已删除');
+          const n = await purgeWithUndo([btn.dataset.purge]);
+          if (!n) return;
+          await load();
+          S.maintenance = await api('/api/maintenance');
+          renderMaintenance(tab);
+        } catch (err) {
+          toast(`失败：${err.message}`, true);
+        }
+      }),
+    );
+  $('#modal-body')
+    .querySelectorAll('[data-save-due]')
+    .forEach((btn) =>
+      btn.addEventListener('click', async () => {
+        const input = btn.parentElement?.querySelector('[data-due]');
+        const value = input?.value;
+        if (!value) return toast('先选一个时间', true);
+        try {
+          await api(`/api/cards/${btn.dataset.saveDue}`, { method: 'PATCH', body: JSON.stringify({ dueAt: value }) });
+          await refresh('补上了截止时间');
+        } catch (err) {
+          toast(`失败：${err.message}`, true);
+        }
+      }),
+    );
+  $('#modal-body')
+    .querySelectorAll('[data-done]')
+    .forEach((btn) =>
+      btn.addEventListener('click', async () => {
+        try {
+          await api(`/api/cards/${btn.dataset.done}`, { method: 'PATCH', body: JSON.stringify({ done: true }) });
+          await refresh('标记完成');
         } catch (err) {
           toast(`失败：${err.message}`, true);
         }
@@ -1885,8 +2105,11 @@ function renderMaintenance(tab) {
           for (const id of ids) await api(`/api/cards/${id}/retire`, { method: 'POST', body: '{}' });
           await refresh(`${ids.length} 条已退休`);
         } else {
-          const res = await api('/api/purge', { method: 'POST', body: JSON.stringify({ ids }) });
-          await refresh(`删了 ${res.removed ?? 0} 条`);
+          const n = await purgeWithUndo(ids);
+          if (!n) return;
+          await load();
+          S.maintenance = await api('/api/maintenance');
+          renderMaintenance(tab);
         }
       } catch (err) {
         toast(`失败：${err.message}`, true);
@@ -2032,7 +2255,7 @@ el.inspStub.addEventListener('click', () => {
 });
 const bootParams = new URLSearchParams(location.search);
 const bootView = bootParams.get('view') ?? localStorage.getItem('mcore-view');
-if (['graph', 'timeline', 'table', 'turns', 'docs'].includes(bootView)) S.view = bootView;
+if (['graph', 'timeline', 'table', 'turns', 'docs', 'health'].includes(bootView)) S.view = bootView;
 await load();
 const bootCard = bootParams.get('card');
 if (bootCard && cards().some((c) => c.id === bootCard)) {

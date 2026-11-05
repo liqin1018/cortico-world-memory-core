@@ -31,7 +31,7 @@ import { importLegacy } from './importer.ts';
 import { rankCards, rankRaw } from './recall.ts';
 import { advance, createInitialState, moodLabel } from './state.ts';
 import { formatLocal, hmToMinutes, humanSpan, inWindow, localParts } from './time.ts';
-import { MemorySite, type Snapshot } from './site.ts';
+import { MemorySite, type HealthReport, type ImportReport, type Snapshot } from './site.ts';
 import { expandDirs, loadDocs, searchDocs } from './workspace.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('../ENV_PROMPT.md', import.meta.url));
@@ -436,7 +436,16 @@ export class MemoryCoreWorld implements World {
         stale: this.store.stale().map((c) => c.id),
         junk: this.store.junk().map((c) => c.id),
         retired: this.store.retired().map((c) => c.id),
+        promises: {
+          noDue: this.store.promisesWithoutDue().map((c) => c.id),
+          overdue: this.store
+            .active()
+            .filter((c) => c.kind === 'promise' && !c.done && c.dueAt && Date.parse(c.dueAt) <= Date.now())
+            .map((c) => c.id),
+        },
       }),
+      health: () => this.healthReport(),
+      importData: (payload: Record<string, unknown>) => this.importBackup(payload),
       mergeCards: (keepId: string, dropIds: string[]) => this.store.merge(keepId, dropIds),
       purgeCards: (ids: string[]) => this.store.purge(ids),
       patchState: (input: Record<string, unknown>) => {
@@ -508,6 +517,119 @@ export class MemoryCoreWorld implements World {
   }
 
   /** 一轮结束：对方刚说过话才把下一次主动往后推，否则内部 turn 会把 dueAt 一路推没。 */
+  /** 健康面板：只报事实，不猜。给的是「现在库长什么样」，不是评分。 */
+  private healthReport(): HealthReport {
+    const now = Date.now();
+    const all = this.store.all();
+    const live = this.store.active();
+    const day = (ts: string) => formatLocal(ts, this.tz()).slice(0, 10);
+    const dead = live.filter((c) => (c.uses || 0) === 0 && now - Date.parse(c.createdAt) > 7 * 86_400_000);
+    const count = new Map<string, number>();
+    for (const c of live) {
+      const d = day(c.createdAt);
+      count.set(d, (count.get(d) || 0) + 1);
+    }
+    const perDay: Array<{ day: string; n: number }> = [];
+    for (let i = 13; i >= 0; i -= 1) {
+      const d = formatLocal(new Date(now - i * 86_400_000), this.tz()).slice(0, 10);
+      perDay.push({ day: d, n: count.get(d) || 0 });
+    }
+    const open = live.filter((c) => c.kind === 'promise' && !c.done);
+    const rawStats = this.raw.stats();
+    return {
+      generatedAt: new Date().toISOString(),
+      cards: { total: all.length, active: live.length, retired: all.length - live.length, dead: dead.length },
+      recall: {
+        calls: live.reduce((n, c) => n + (c.uses || 0), 0),
+        cardsTouched: live.filter((c) => (c.uses || 0) > 0).length,
+      },
+      perDay,
+      promises: {
+        open: open.length,
+        overdue: open.filter((c) => c.dueAt && Date.parse(c.dueAt) <= now).length,
+        noDue: open.filter((c) => !c.dueAt).length,
+        repeating: Math.max(0, Number(this.cfg().promiseRepeatDays) || 0),
+      },
+      raw: { lines: this.raw.size, archivedDays: rawStats.days, archivedLines: this.raw.archiveLines() },
+      backup: this.store.backupInfo(),
+      deadIds: dead.map((c) => c.id),
+    };
+  }
+
+  /**
+   * 导入备份。只加不覆盖：已有的卡片按 id 或「同类型 + 同文本」跳过。
+   * state 只接 rawWatermark 而且只往前推——水位倒回去会把已经录过的原文再录一遍。
+   */
+  private importBackup(payload: Record<string, unknown>): ImportReport {
+    const warnings: string[] = [];
+    const data = (payload.data && typeof payload.data === 'object' ? payload.data : payload) as Record<string, unknown>;
+    if (!Array.isArray(data.cards)) warnings.push('没有 cards 字段，只导入了原文和日程。');
+    const cards = this.store.importCards(Array.isArray(data.cards) ? data.cards : []);
+
+    const turnsIn = Array.isArray(data.turns) ? data.turns : [];
+    const entries: RawEntry[] = [];
+    let badTurns = 0;
+    for (const raw of turnsIn) {
+      const t = (raw ?? {}) as Partial<RawEntry>;
+      const cursor = Number(t.cursor);
+      if (!Number.isFinite(cursor) || typeof t.text !== 'string' || !t.text.trim()) {
+        badTurns += 1;
+        continue;
+      }
+      entries.push({
+        cursor,
+        ts: typeof t.ts === 'string' && t.ts ? t.ts : new Date().toISOString(),
+        sender: String(t.sender ?? 'import').slice(0, 40),
+        text: t.text.slice(0, 200),
+      });
+    }
+    const addedTurns = this.raw.add(entries);
+
+    const plansIn = Array.isArray(data.plans) ? data.plans : [];
+    let plansAdded = 0;
+    let plansSkipped = 0;
+    for (const raw of plansIn) {
+      const p = (raw ?? {}) as Partial<PlanItem>;
+      const title = typeof p.title === 'string' ? p.title.trim() : '';
+      const time = typeof p.time === 'string' ? p.time.trim() : '';
+      if (!title || !time) {
+        plansSkipped += 1;
+        continue;
+      }
+      if (this.plans.some((x) => x.time === time && x.title === title)) {
+        plansSkipped += 1;
+        continue;
+      }
+      this.plans.push({
+        id: typeof p.id === 'string' && p.id ? p.id : randomUUID(),
+        time,
+        title,
+        place: typeof p.place === 'string' ? p.place : undefined,
+        done: p.done === true,
+      });
+      plansAdded += 1;
+    }
+    if (plansAdded) this.save(true);
+
+    let watermark = Number(this.state.rawWatermark ?? 0) || 0;
+    const st = data.state as Partial<CoreState> | undefined;
+    const incoming = Number(st?.rawWatermark);
+    if (Number.isFinite(incoming) && incoming > watermark) {
+      watermark = incoming;
+      this.state.rawWatermark = watermark;
+      this.save(true);
+    }
+    if (badTurns) warnings.push(`${badTurns} 行原文格式不对，已跳过。`);
+    if (turnsIn.length && addedTurns === 0) warnings.push('原文都是已有的，没有新增。');
+    return {
+      cards,
+      turns: { added: addedTurns, skipped: turnsIn.length - addedTurns },
+      plans: { added: plansAdded, skipped: plansSkipped },
+      state: { watermark },
+      warnings,
+    };
+  }
+
   onTurnEnded(): void {
     const now = new Date();
     this.lastUserProbe = 0;
@@ -539,6 +661,10 @@ export class MemoryCoreWorld implements World {
     const text = str(args.text, 500);
     if (!text) return 'text 不能为空。';
     const dueAtRaw = str(args.dueAt, 40);
+    // 没有截止时间的承诺等于永远不提醒。宁可让模型当场问一句，也别让它编一个时间。
+    if (kind === 'promise' && !dueAtRaw) {
+      return '承诺必须带 dueAt（ISO 时间，例如 2026-11-06T07:20）。不知道具体时间就问对方一句「大概什么时候」，别自己估。';
+    }
     const dueAt = dueAtRaw ? dueAtRaw.replace(' ', 'T') : undefined;
     const res = this.store.add({
       kind,
@@ -615,6 +741,7 @@ export class MemoryCoreWorld implements World {
       kind: str(args.kind, 20) || undefined,
       days: num(args.days, 0, 0, 3650) || undefined,
       limit,
+      useAging: this.cfg().recallUseAging !== false,
     });
 
     if (mode === 'search' && query) {
@@ -938,7 +1065,7 @@ export class MemoryCoreWorld implements World {
   }
 
   private async maybeRemind(now: Date): Promise<void> {
-    const due = this.store.duePromises(now.getTime());
+    const due = this.store.duePromises(now.getTime(), Number(this.cfg().promiseRepeatDays) || 0);
     if (!due.length) return;
     const lastUser = this.probeLastUser(now.getTime());
     if (this.cfg().requireRecentUserHours > 0) {

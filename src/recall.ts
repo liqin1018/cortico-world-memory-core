@@ -59,6 +59,8 @@ export interface RankOptions {
   days?: number;
   limit: number;
   now?: number;
+  /** 是否参考「上次被想起的时间」。关掉就退回只看关键词、标签、权重和新鲜度。 */
+  useAging?: boolean;
 }
 
 export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
@@ -86,7 +88,14 @@ export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
     const tagHit = card.tags.length ? overlap(queryTokens, card.tags.join(' ')) : 0;
     // 同一张卡被反复召回只做有限的边际压制（封顶 8 次），别让常用的重要记忆越用越沉
     const used = Math.min(card.uses || 0, 8) * 0.03;
-    const score = lexical * 2 + tagHit * 1.2 + card.weight * 0.5 + freshness(card.createdAt, now) - used;
+    // 最近被想起过的卡给一点小加成：三个月没动过的旧卡不该把上周刚聊过的挤下去。
+    // 权重刻意压得很小（0.15 上限），压不倒一个关键词命中（2 分）。
+    const lastUsed = Date.parse(card.lastUsedAt ?? '');
+    const glow =
+      opts.useAging && Number.isFinite(lastUsed)
+        ? 0.15 * Math.exp(-(now - lastUsed) / (30 * 86_400_000))
+        : 0;
+    const score = lexical * 2 + tagHit * 1.2 + card.weight * 0.5 + freshness(card.createdAt, now) + glow - used;
     return { card, score };
   });
   scored.sort((a, b) => b.score - a.score);

@@ -59,6 +59,8 @@ const seeds: Seed[] = [
   // 两条被接替的旧版本：演示版本链在图上长什么样
   { kind: 'fact', text: '她妈妈九月要来住一周，她有点不情愿。', tags: ['家人'], weight: 0.5, days: 31, status: 'retired' },
   { kind: 'promise', text: '明早七点叫她起床。', tags: ['日常'], weight: 0.5, days: 4, status: 'retired' },
+  // 没写截止时间的承诺：提醒管线管不到，体检测出来会列在「去补时间」里。放最后，别动上面的下标。
+  { kind: 'promise', text: '答应帮她看一眼抖音绑定的号，一直没说定什么时候看。', tags: ['日常'], weight: 0.5, days: 2 },
 ];
 
 const cards = seeds.map((s) => {
@@ -151,6 +153,15 @@ f.addEventListener('load', async () => {
       c.dispatchEvent(new WheelEvent('wheel', { ...at, deltaY: -120, bubbles: true, cancelable: true }));
       await wait(120);
     }
+    return;
+  }
+  if (mode === 'promises') {
+    d.querySelector('#btn-more').click();
+    await wait(400);
+    d.querySelector('#m-maint').click();
+    await wait(800);
+    const t = [...d.querySelectorAll('.maint-tabs button')].find((b) => b.textContent.includes('承诺'));
+    t?.click();
     return;
   }
   d.querySelector('#btn-more').click();

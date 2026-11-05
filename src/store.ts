@@ -2,7 +2,7 @@
  * 卡片表、对话原文、日程与状态的文件层。
  * 只碰本插件自己的数据目录；四套旧记忆由 importer.ts 只读导入，不改原文件。
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, appendFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, appendFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -101,12 +101,36 @@ export function readJson<T>(file: string, fallback: T): T {
   }
 }
 
-export function writeJson(file: string, value: unknown): void {
+/**
+ * 先写同目录的 `.tmp` 再改名覆盖。
+ * 直接 writeFileSync 覆盖的窗口里断电/被杀，原文件会变成半截或空文件——整个记忆库就这么没了。
+ * rename 在 Windows 上偶尔被杀软或索引服务锁住，失败时退回直接写，至少不丢这一次。
+ * @returns 是否落盘成功
+ */
+export function writeAtomic(file: string, body: string): boolean {
+  const tmp = `${file}.tmp`;
   try {
-    writeFileSync(file, JSON.stringify(value, null, 2), 'utf8');
+    writeFileSync(tmp, body, 'utf8');
+    renameSync(tmp, file);
+    return true;
   } catch {
-    // 落盘失败不阻断运行
+    try {
+      writeFileSync(file, body, 'utf8');
+      return true;
+    } catch {
+      return false;
+    } finally {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // 没有残留就算了
+      }
+    }
   }
+}
+
+export function writeJson(file: string, value: unknown): void {
+  writeAtomic(file, JSON.stringify(value, null, 2));
 }
 
 /** 规范化文本，用于判重：去掉标点空白与日期，只留内容。 */
@@ -124,11 +148,15 @@ function clamp01(n: number): number {
 export class CardStore {
   private cards: Card[] = [];
   private readonly file: string;
+  private readonly backupDir: string;
+  /** 今天是否已经备过份。同一天只备一次，避免每次 save 都复制。 */
+  private backupDay = '';
   private dirty = false;
 
   constructor(dir: string) {
     ensureDir(dir);
     this.file = join(dir, 'cards.jsonl');
+    this.backupDir = join(dir, 'backups');
     this.load();
   }
 
@@ -500,13 +528,87 @@ export class CardStore {
       .slice(0, Math.max(0, limit));
   }
 
-  duePromises(now = Date.now()): Card[] {
+  /**
+   * 到点该提的承诺。
+   * repeatDays = 0 时和旧版一致：提醒过一次就永久沉默。
+   * repeatDays > 0 时，距上次提醒够这么多天就再提一次（「每天发一条」这种周期承诺靠它）。
+   */
+  duePromises(now = Date.now(), repeatDays = 0): Card[] {
     const at = now;
+    const gap = Math.max(0, Number(repeatDays) || 0) * 86_400_000;
     return this.cards.filter((c) => {
       if (c.kind !== 'promise' || c.done || c.status === 'retired' || !c.dueAt) return false;
       const due = Date.parse(c.dueAt);
-      return Number.isFinite(due) && due <= at && !c.remindedAt;
+      if (!Number.isFinite(due) || due > at) return false;
+      if (!c.remindedAt) return true;
+      if (gap <= 0) return false;
+      const last = Date.parse(c.remindedAt);
+      return !Number.isFinite(last) || at - last >= gap;
     });
+  }
+
+  /** 没有截止时间的承诺：提醒管线对它们完全无效，界面上要单独列出来让人补。 */
+  promisesWithoutDue(): Card[] {
+    return this.cards
+      .filter((c) => c.kind === 'promise' && !c.done && c.status !== 'retired' && !c.dueAt)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  /**
+   * 从备份里灌卡片。同 id 或「同类型 + 同文本」已经存在就跳过，绝不覆盖现有内容——
+   * 导入是恢复，不是覆盖。返回加了几条、跳了几条。
+   */
+  importCards(input: readonly unknown[]): { added: number; skipped: number } {
+    let added = 0;
+    let skipped = 0;
+    const byId = new Set(this.cards.map((c) => c.id));
+    const byKey = new Set(this.cards.map((c) => `${c.kind}\u0000${normalizeText(c.text)}`));
+    for (const raw of input) {
+      const c = (raw ?? {}) as Partial<Card>;
+      if (typeof c.text !== 'string' || !c.text.trim()) {
+        skipped += 1;
+        continue;
+      }
+      const kind = CARD_KINDS.includes(c.kind as CardKind) ? (c.kind as CardKind) : 'fact';
+      const text = c.text.replace(/\s+/g, ' ').trim().slice(0, 500);
+      const key = `${kind}\u0000${normalizeText(text)}`;
+      const id = typeof c.id === 'string' && /^[\w-]{1,60}$/.test(c.id) ? c.id : randomUUID();
+      if (byId.has(id) || byKey.has(key)) {
+        skipped += 1;
+        continue;
+      }
+      const now = new Date().toISOString();
+      const card: Card = {
+        id,
+        kind,
+        text,
+        weight: clamp01(Number(c.weight ?? 0.5)),
+        tags: Array.isArray(c.tags) ? (c.tags as unknown[]).map((t) => String(t).slice(0, 20)).slice(0, 6) : [],
+        createdAt: typeof c.createdAt === 'string' && c.createdAt ? c.createdAt : now,
+        updatedAt: typeof c.updatedAt === 'string' && c.updatedAt ? c.updatedAt : now,
+        source: 'import:backup',
+        origin: 'import',
+        uses: Math.max(0, Math.floor(Number(c.uses ?? 0)) || 0),
+        lastUsedAt: typeof c.lastUsedAt === 'string' ? c.lastUsedAt : undefined,
+        dueAt: typeof c.dueAt === 'string' ? c.dueAt : undefined,
+        done: c.done === true ? true : undefined,
+        remindedAt: typeof c.remindedAt === 'string' ? c.remindedAt : undefined,
+        status: c.status === 'retired' ? 'retired' : 'active',
+        retiredAt: typeof c.retiredAt === 'string' ? c.retiredAt : undefined,
+        retiredBy: typeof c.retiredBy === 'string' ? c.retiredBy : undefined,
+        supersedes: Array.isArray(c.supersedes) ? (c.supersedes as unknown[]).map((x) => String(x)).slice(0, 20) : undefined,
+        scope: typeof c.scope === 'string' && c.scope ? c.scope.slice(0, 20) : 'import',
+      };
+      this.cards.push(card);
+      byId.add(id);
+      byKey.add(key);
+      added += 1;
+    }
+    if (added) {
+      this.dirty = true;
+      this.save(true);
+    }
+    return { added, skipped };
   }
 
   reset(): void {
@@ -518,11 +620,50 @@ export class CardStore {
   save(force = false): void {
     if (!this.dirty && !force) return;
     this.dirty = false;
-    try {
-      writeFileSync(this.file, this.cards.map((c) => JSON.stringify(c)).join('\n') + '\n', 'utf8');
-    } catch {
+    this.backupOnceADay();
+    if (!writeAtomic(this.file, this.cards.map((c) => JSON.stringify(c)).join('\n') + '\n')) {
       // 落盘失败下一拍再来
       this.dirty = true;
+    }
+  }
+
+  /**
+   * 每天第一次写之前，把当前文件复制一份到 backups/cards-YYYY-MM-DD.jsonl，只留最近 7 份。
+   * 顺序很重要：先备份、再覆盖，这样备份里至少有一份「改动前」的完整文件。
+   */
+  private backupOnceADay(): void {
+    try {
+      const d = new Date();
+      const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (this.backupDay === day) return;
+      // 文件还不存在时先不标记，等第一次写出来之后再补备份
+      if (!existsSync(this.file)) return;
+      ensureDir(this.backupDir);
+      copyFileSync(this.file, join(this.backupDir, `cards-${day}.jsonl`));
+      this.backupDay = day;
+      const old = readdirSync(this.backupDir)
+        .filter((f) => /^cards-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+        .sort();
+      for (const f of old.slice(0, Math.max(0, old.length - 7))) {
+        try {
+          unlinkSync(join(this.backupDir, f));
+        } catch {
+          // 删不掉就留着，不影响
+        }
+      }
+    } catch {
+      // 备份失败不阻断写入
+    }
+  }
+
+  /** 备份现状，健康面板用。 */
+  backupInfo(): { dir: string; count: number; latest: string | null } {
+    try {
+      if (!existsSync(this.backupDir)) return { dir: this.backupDir, count: 0, latest: null };
+      const files = readdirSync(this.backupDir).filter((f) => /^cards-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
+      return { dir: this.backupDir, count: files.length, latest: files.at(-1) ?? null };
+    } catch {
+      return { dir: this.backupDir, count: 0, latest: null };
     }
   }
 }
@@ -667,6 +808,19 @@ export class RawLog {
     return { days: files.length, bytes, oldest: files[0]?.day ?? '' };
   }
 
+  /** 归档总行数。健康面板按需调用，不进热路径。 */
+  archiveLines(): number {
+    let n = 0;
+    for (const f of this.archiveFiles()) {
+      try {
+        n += readFileSync(f.file, 'utf8').split('\n').filter((line) => line.trim()).length;
+      } catch {
+        // 读不了就跳过
+      }
+    }
+    return n;
+  }
+
   /** 翻归档：默认最近 30 天，最多 8000 行。只给 mode=archive 用，不进常规召回。 */
   readArchive(days = 30, maxEntries = 8000): RawEntry[] {
     const span = Math.max(1, Math.min(365, Number(days) || 30));
@@ -694,11 +848,7 @@ export class RawLog {
   }
 
   private rewrite(): void {
-    try {
-      writeFileSync(this.file, this.entries.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
-    } catch {
-      // ignore
-    }
+    writeAtomic(this.file, this.entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
   }
 
   get size(): number {

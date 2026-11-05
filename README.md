@@ -29,7 +29,7 @@ pnpm add cortico-world-memory-core
 
 | 工具 | 作用 |
 |---|---|
-| `mcore_write` | 写一条记忆。`kind` 五选一，可带 `weight` / `tags` / `dueAt`；传 `closes` 表示「这条替代了某条旧的」 |
+| `mcore_write` | 写一条记忆。`kind` 五选一，可带 `weight` / `tags` / `dueAt`；**`promise` 必须带 `dueAt`**，不知道时间会被拒绝并提示先问；传 `closes` 表示「这条替代了某条旧的」 |
 | `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；`mode=open` 看没做完的承诺和今天的安排；`mode=archive` 翻更早的归档原文 |
 | `mcore_state` | 角色自己的精力 / 心情 / 正在做什么 / 在哪 / 睡没睡 |
 | `mcore_plan` | 今天的日程（增、勾、清空） |
@@ -55,12 +55,15 @@ pnpm add cortico-world-memory-core
 | 列表 | 可排序表格（类型 / 内容 / 权重 / 来源 / 标签 / 记于 / 使用次数），权重带微条 |
 | 原文 | 最近 7 天的对话原文，搜索高亮；更早的进 `archive/`，模型可用 `mode=archive` 翻回去 |
 | 文件 | 工作区里被检索的 md / txt（只读） |
-| 维护 | 重复 / 疑似作废 / 垃圾 / 回收站，四项都先预览再执行 |
+| 维护 | 重复 / 疑似作废 / 垃圾 / **承诺** / 回收站；承诺页能补截止时间、标记做完；彻底的删除会先列出要删的东西，10 秒内可撤销 |
+| 体检 | 在用 / 从没被召回 / 召回次数 / 原文规模、近 14 天新增、承诺与备份状态；从没被召回的卡能一键退休 |
 
 右栏是详情：可改文本、类型、权重、标签、截止时间，能复制、看相关记忆与版本链；没有选中时收成一条 46px 的窄条，把宽度还给舞台。
 
-快捷键：`/` 搜索 · `1–5` 切视图 · `J/K` 移动 · `Enter` 打开 · `E` 改 · `N` 新建 · `I` 右栏 · `R` 刷新 · `?` 帮助。
+快捷键：`/` 搜索 · `1–6` 切视图 · `J/K` 移动 · `Enter` 打开 · `E` 改 · `N` 新建 · `I` 右栏 · `R` 刷新 · `?` 帮助。
 深链接：`/?view=timeline`、`/?card=<id>`。
+
+导出与导入：`⋯` 菜单里能导出 Markdown / JSON。JSON 是整包（卡片 + 原文 + 日程 + 状态），可以原样 `POST /api/import` 导回来——**只加不覆盖**，同 id 或同类型同文本会跳过，所以重复导同一个文件是安全的。水位只往前推，不会被旧备份倒回去。
 
 四条实现约束（改的时候别破坏）：
 
@@ -89,6 +92,8 @@ pnpm add cortico-world-memory-core
 | `captureBackfill` | `false` | 打开后重启一次：把水位倒回开头重扫历史消息，补录完自动停用 |
 | `recallLimit` | `5` | 一次召回给几条 |
 | `recallMaxChars` | `600` | 召回结果总字数上限 |
+| `recallUseAging` | `true` | 排序参考「上次被想起的时间」：久不用的旧卡让位；关掉退回只看关键词、标签、权重 |
+| `promiseRepeatDays` | `0` | 承诺到期提醒过之后隔几天再提；`0` = 只提醒一次（和旧版一致） |
 | `proactiveEnabled` | `true` | 主动开口 |
 | `proactiveMinGapMin` / `proactiveDailyCap` | `100` / `3` | 主动间隔与每日上限 |
 | `nightlyConsolidate` | `false` | 夜间整理（会多一次完整请求，默认关） |
@@ -101,6 +106,7 @@ pnpm add cortico-world-memory-core
 ```
 data/memory-core/
 ├─ cards.jsonl      卡片（一行一张，可以直接看）
+├─ backups/         每天第一笔写入前自动存的副本（cards-YYYY-MM-DD.jsonl，留 7 份）
 ├─ turns.jsonl      对方最近的对话原文（按 captureSenders 过滤）
 ├─ archive/         过期的原文按天归档（YYYY-MM-DD.jsonl），可搜可删
 ├─ plans.json       今天的日程
@@ -123,6 +129,12 @@ data/memory-core/
 ```bash
 # 数据层：退休 / 恢复 / 改版血缘 / 重复合并 / 作废与垃圾识别
 node --experimental-transform-types tools/test-store.ts
+
+# 0.4.0 新增：原子写与备份轮转 / 导入去重 / 承诺提醒周期 / 体检与导入
+node --experimental-transform-types tools/test-upgrade.ts
+
+# 原文捕获：白名单、旧默认迁移、回放、按天归档
+node --experimental-transform-types tools/test-capture.ts
 
 # World 层：用假宿主真启动一次，跑写、查、closes 取代
 node --experimental-transform-types tools/test-world.ts
