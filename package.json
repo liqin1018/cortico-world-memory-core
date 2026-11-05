@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-memory-core",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "type": "module",
   "description": "Cortico World 长期记忆：一张卡片表 + 4 个工具 + 一段静态提示词，附状态、日程、主动开口与本地记忆地图。\n\nQQ 交流群：745879632",
   "keywords": [

@@ -1041,6 +1041,8 @@ class Galaxy {
     this.yaw = 0.55;
     this.pitch = 0.46;
     this.zoom = 1;
+    this.panX = 0;
+    this.panY = 0;
     const gx = new URLSearchParams(location.search).get('gx');
     if (gx) {
       const [a, b, c] = gx.split(',').map(Number);
@@ -1116,7 +1118,17 @@ class Galaxy {
       'wheel',
       (e) => {
         e.preventDefault();
-        this.zoom = clampNum(this.zoom * Math.exp(-e.deltaY * 0.0013), 0.45, 3.2);
+        const box = c.getBoundingClientRect();
+        const dx = e.clientX - box.left - this.CX;
+        const dy = e.clientY - box.top - this.CY;
+        const old = this.zoom;
+        const next = clampNum(old * Math.exp(-e.deltaY * 0.0013), 0.45, 3.2);
+        if (next === old) return;
+        // 让光标指着的那颗星别跑：按比例反推平移量
+        const ratio = next / old;
+        this.panX = clampNum(dx - (dx - this.panX) * ratio, -this.w * 0.5, this.w * 0.5);
+        this.panY = clampNum(dy - (dy - this.panY) * ratio, -this.h * 0.5, this.h * 0.5);
+        this.zoom = next;
         this.lastInteract = performance.now();
       },
       { passive: false },
@@ -1126,6 +1138,8 @@ class Galaxy {
       this.yaw = 0.55;
       this.pitch = 0.46;
       this.zoom = 1;
+      this.panX = 0;
+      this.panY = 0;
       this.vy = 0;
       this.vp = 0;
       this.lastInteract = performance.now();
@@ -1177,9 +1191,24 @@ class Galaxy {
     this.buildScene();
   }
 
-  /** 光晕贴图：5 种类型各一张，画节点时直接贴。 */
+  /** 柔光贴图：节点 5 种类型各一张，旋臂薄雾再各一张。 */
   buildSprites() {
     this.glow.clear();
+    this.hazeSprites = new Map();
+    for (const tone of ['255,238,205', '150,225,255', '195,170,255']) {
+      const size = 128;
+      const cv = document.createElement('canvas');
+      cv.width = size;
+      cv.height = size;
+      const g = cv.getContext('2d');
+      const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+      grad.addColorStop(0, `rgba(${tone},1)`);
+      grad.addColorStop(0.35, `rgba(${tone},0.45)`);
+      grad.addColorStop(1, `rgba(${tone},0)`);
+      g.fillStyle = grad;
+      g.fillRect(0, 0, size, size);
+      this.hazeSprites.set(tone, cv);
+    }
     for (const [kind, color] of Object.entries(GALAXY_COLOR)) {
       const size = 128;
       const cv = document.createElement('canvas');
@@ -1277,7 +1306,8 @@ class Galaxy {
         const uses = (card.uses ?? 0) + (card.primedCount ?? 0);
         const last = Date.parse(card.lastUsedAt ?? card.createdAt ?? '') || now;
         const quiet = Math.max(0, (now - last) / 86_400_000);
-        const bright = (0.4 + 0.6 * Math.exp(-quiet / 45)) * (card.coldAt ? 0.42 : 1);
+        const sizeBoost = 0.72 + 0.4 * Math.min(1, g.cards.length / 14);
+        const bright = (0.4 + 0.6 * Math.exp(-quiet / 45)) * (card.coldAt ? 0.42 : 1) * sizeBoost;
         const node = {
           card,
           x: g.x + Math.cos(aa) * rr,
@@ -1311,21 +1341,85 @@ class Galaxy {
       }
     }
 
-    // 星系尘埃：两条旋臂
+    // 超空间航道：不同星系之间、但共享标签的记忆连一条淡线
+    this.lanes = [];
+    const byTag = new Map();
+    for (const c of this.cards) for (const t of c.tags ?? []) {
+      if (!byTag.has(t)) byTag.set(t, []);
+      byTag.get(t).push(c);
+    }
+    const byId = new Map(this.nodes.map((n) => [n.card.id, n]));
+    for (const list of byTag.values()) {
+      if (list.length < 2 || list.length > 6) continue;
+      const head = byId.get(list[0].id);
+      if (!head) continue;
+      for (let i = 1; i < list.length; i += 1) {
+        const other = byId.get(list[i].id);
+        if (other && other.region !== head.region) this.lanes.push([head, other]);
+      }
+    }
+
+    // 星系尘埃：散点按密度自然堆出旋臂，不画「虚线螺旋」
     this.dust = [];
-    for (let arm = 0; arm < 2; arm += 1) {
-      const base = arm * Math.PI;
-      for (let i = 0; i < 2200; i += 1) {
-        const s = Math.pow(rnd(), 0.78);
-        const r = RCORE * 0.4 + s * RMAX * 1.05;
-        const t = base + 2.05 * Math.PI * s + gauss() * 0.08;
+    const arms = [
+      { base: 0, tone: '150,225,255', n: 2200 },
+      { base: Math.PI, tone: '195,170,255', n: 2200 },
+      { base: Math.PI * 0.55, tone: '255,225,190', n: 800 },
+    ];
+    for (const arm of arms) {
+      for (let i = 0; i < arm.n; i += 1) {
+        const s = Math.pow(rnd(), 0.75);
+        const r = RCORE * 0.55 + s * RMAX * 1.1;
+        const t = arm.base + 2.15 * Math.PI * s + gauss() * (0.03 + 0.085 * s);
+        const rr = r + gauss() * (10 + 42 * s);
+        // 沿弧长做亮度起伏，看起来有「结」和「空洞」
+        const knot = 0.5 + 0.5 * Math.sin(s * 19 + arm.base * 3);
+        const faint = arm.n === 800 ? 0.55 : 1;
         this.dust.push({
-          x: Math.cos(t) * r + gauss() * 6,
-          y: Math.sin(t) * r + gauss() * 6,
-          z: gauss() * RMAX * 0.035,
-          size: 0.5 + Math.pow(rnd(), 2) * 1.8,
-          alpha: (0.12 + rnd() * 0.34) * (1 - s * 0.25),
-          color: s < 0.28 ? '255,238,205' : arm === 0 ? '150,225,255' : '195,170,255',
+          x: Math.cos(t) * rr,
+          y: Math.sin(t) * rr,
+          z: gauss() * RMAX * 0.05,
+          size: 0.5 + Math.pow(rnd(), 2) * 1.7,
+          alpha: (0.12 + rnd() * 0.24) * knot * (1 - s * 0.3) * faint,
+          color: s < 0.22 ? '255,238,205' : arm.tone,
+        });
+      }
+    }
+
+    // 旋臂薄雾：几十个大而极淡的圆，把散点连成一片
+    this.haze = [];
+    for (const arm of arms) {
+      const steps = arm.n === 800 ? 16 : 30;
+      for (let i = 0; i < steps; i += 1) {
+        const s0 = (i + 0.5) / steps;
+        const r = RCORE * 0.55 + s0 * RMAX * 1.1;
+        const t = arm.base + 2.15 * Math.PI * s0;
+        this.haze.push({
+          x: Math.cos(t) * r,
+          y: Math.sin(t) * r,
+          z: 0,
+          radius: RMAX * (0.05 + 0.05 * s0),
+          color: s0 < 0.22 ? '255,238,205' : arm.tone,
+          alpha: 0.035 * (arm.n === 800 ? 0.6 : 1) * (1 - s0 * 0.25),
+        });
+      }
+    }
+
+    // 旋臂薄雾：几十个大而极淡的圆，把散点连成一片
+    this.haze = [];
+    for (const arm of arms) {
+      const steps = arm.n === 800 ? 16 : 30;
+      for (let i = 0; i < steps; i += 1) {
+        const s0 = (i + 0.5) / steps;
+        const r = RCORE * 0.55 + s0 * RMAX * 1.1;
+        const t = arm.base + 2.15 * Math.PI * s0;
+        this.haze.push({
+          x: Math.cos(t) * r,
+          y: Math.sin(t) * r,
+          z: 0,
+          radius: RMAX * (0.05 + 0.05 * s0),
+          color: s0 < 0.22 ? '255,238,205' : arm.tone,
+          alpha: 0.035 * (arm.n === 800 ? 0.6 : 1) * (1 - s0 * 0.25),
         });
       }
     }
@@ -1364,7 +1458,7 @@ class Galaxy {
     const depth = Z + GALAXY_CAM;
     if (depth < 120) return null;
     const k = (GALAXY_CAM / depth) * this.zoom;
-    return { x: this.CX + X * k, y: this.CY + Y * k, k, depth };
+    return { x: this.CX + this.panX + X * k, y: this.CY + this.panY + Y * k, k, depth };
   }
 
   step(once = false) {
@@ -1409,11 +1503,11 @@ class Galaxy {
     for (const g of this.regions) {
       const p = this.project(g.x, g.y, g.rz ?? 0);
       if (!p) continue;
-      const radius = g.br * 2.2 * p.k;
+      const radius = g.br * 1.9 * p.k;
       const grd = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
       const hex = g.color;
-      grd.addColorStop(0, `${hex}22`);
-      grd.addColorStop(0.5, `${hex}0d`);
+      grd.addColorStop(0, `${hex}16`);
+      grd.addColorStop(0.5, `${hex}08`);
       grd.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = grd;
       ctx.beginPath();
@@ -1427,9 +1521,9 @@ class Galaxy {
     if (core) {
       ctx.globalCompositeOperation = 'lighter';
       for (const [mul, alpha] of [
-        [4.2, 0.12],
-        [2.2, 0.26],
-        [1.05, 0.55],
+        [3.2, 0.1],
+        [1.8, 0.22],
+        [0.9, 0.5],
       ]) {
         const rr = this.RCORE * mul * core.k;
         const grd = ctx.createRadialGradient(core.x, core.y, 0, core.x, core.y, rr);
@@ -1446,6 +1540,38 @@ class Galaxy {
       ctx.beginPath();
       ctx.arc(core.x, core.y, Math.max(2.5, this.RCORE * 0.12 * core.k), 0, Math.PI * 2);
       ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // 旋臂薄雾：柔光贴图叠出来的连续感，不是一个个硬圆
+    if (this.haze?.length) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (const h of this.haze) {
+        const p = this.project(h.x, h.y, h.z);
+        if (!p) continue;
+        const sprite = this.hazeSprites?.get(h.color);
+        if (!sprite) continue;
+        const r = h.radius * p.k * 2.2;
+        ctx.globalAlpha = h.alpha * 2.4;
+        ctx.drawImage(sprite, p.x - r, p.y - r, r * 2, r * 2);
+      }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // 旋臂薄雾：柔光贴图叠出来的连续感，不是一个个硬圆
+    if (this.haze?.length) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (const h of this.haze) {
+        const p = this.project(h.x, h.y, h.z);
+        if (!p) continue;
+        const sprite = this.hazeSprites?.get(h.color);
+        if (!sprite) continue;
+        const r = h.radius * p.k * 2.2;
+        ctx.globalAlpha = h.alpha * 2.4;
+        ctx.drawImage(sprite, p.x - r, p.y - r, r * 2, r * 2);
+      }
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
     }
@@ -1488,20 +1614,25 @@ class Galaxy {
       const p = this.project(n.x, n.y, n.z);
       if (!p) continue;
       this.projected.set(n.card.id, { x: p.x, y: p.y, k: p.k });
+      const tone = GALAXY_COLOR[n.card.kind] ?? '#c3ccd8';
+      const core = Math.max(0.7, (0.8 + n.r * 0.32) * p.k);
+      // 光晕压到 3 倍核径以内、透明度很低：放大不会糊成一团
+      const halo = core * 3;
+      ctx.globalAlpha = 0.24 * n.bright;
       const sprite = this.glow.get(n.card.kind) ?? this.glow.get('note');
-      const size = n.r * p.k * 9;
-      ctx.globalAlpha = 0.42 * n.bright * Math.min(1.1, p.k);
-      ctx.drawImage(sprite, p.x - size, p.y - size, size * 2, size * 2);
-      ctx.globalAlpha = n.bright;
+      ctx.drawImage(sprite, p.x - halo, p.y - halo, halo * 2, halo * 2);
+      // 锐利的星核
+      ctx.globalAlpha = Math.min(1, 0.72 + n.bright * 0.4);
       ctx.fillStyle = '#fff';
       ctx.beginPath();
-      ctx.arc(p.x, p.y, Math.max(0.6, n.r * 0.55 * p.k), 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, core * 0.5, 0, Math.PI * 2);
       ctx.fill();
-      if (n.r * p.k > 3.4) {
-        ctx.globalAlpha = 0.3 * n.bright;
-        ctx.strokeStyle = GALAXY_COLOR[n.card.kind] ?? '#c3ccd8';
-        ctx.lineWidth = 0.7;
-        const arm = n.r * p.k * 4;
+      // 十字星芒，只给够亮的
+      if (core > 1.5) {
+        const arm = core * (3.6 + n.bright * 3);
+        ctx.globalAlpha = 0.2 * n.bright;
+        ctx.strokeStyle = tone;
+        ctx.lineWidth = 0.6;
         ctx.beginPath();
         ctx.moveTo(p.x - arm, p.y);
         ctx.lineTo(p.x + arm, p.y);
@@ -1557,7 +1688,9 @@ class Galaxy {
     const placed = [];
     ctx.textBaseline = 'middle';
     ctx.font = '600 12px -apple-system, "PingFang SC", sans-serif';
+    const detail = this.zoom >= 0.9;
     for (const g of this.regions) {
+      if (!detail && g.cards.length < 2) continue;
       const p = this.project(g.x, g.y, g.rz ?? 0);
       if (!p) continue;
       const pts = g.nodes.map((n) => this.projected.get(n.card.id)).filter(Boolean);
