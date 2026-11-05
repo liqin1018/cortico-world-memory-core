@@ -58,6 +58,16 @@ function clip(text: string, limit: number): string {
   return s.length > limit ? `${s.slice(0, limit)}…` : s;
 }
 
+/** 原话要落进卡片，先把明显的号码抹掉：卡片会被导出、被展示，原话不该泄。 */
+function scrubQuote(text: string): string {
+  return String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\d{7,}/g, '[号码]')
+    .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[邮箱]')
+    .slice(0, 80);
+}
+
 function num(value: unknown, fallback: number, lo: number, hi: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -748,7 +758,12 @@ export class MemoryCoreWorld implements World {
     this.probeLastUser(Date.now());
     const src =
       this.lastTurn && Date.now() - this.lastTurn.at < 30 * 60_000
-        ? { cursor: this.lastTurn.cursor, ts: new Date(this.lastTurn.at).toISOString() }
+        ? {
+            cursor: this.lastTurn.cursor,
+            ts: new Date(this.lastTurn.at).toISOString(),
+            // 原话一起存下来：卡片是转述，将来要证明「她当时真这么说过」，靠的是这个
+            text: scrubQuote(this.lastTurn.text) || undefined,
+          }
         : undefined;
     const res = this.store.add({
       kind,
@@ -827,6 +842,8 @@ export class MemoryCoreWorld implements World {
 
   private handleRecall(args: Record<string, unknown>): string {
     if (!this.cfg().memoryEnabled) return '记忆已关闭（设置页里可以打开）。';
+    const idArg = str(args.id, 60);
+    if (idArg) return this.handleSource(idArg);
     const query = str(args.query, 200);
     const mode = String(args.mode ?? (query ? 'search' : 'recent'));
     const limit = num(args.limit, Number(this.cfg().recallLimit) || 5, 1, 12);
@@ -956,6 +973,64 @@ export class MemoryCoreWorld implements World {
       `下次主动约 ${dueAt}；今天已主动 ${count}/${this.cfg().proactiveDailyCap || '∞'} 次。`,
       `记忆 ${stats.total} 条，对话原文 ${this.raw.size} 行。`,
     ].join('\n');
+  }
+
+  /**
+   * 看一条记忆的出处：卡片原文 + 写它时那句原话 + 前后文。
+   * 卡片是改写的，只有这里能回到证据。
+   */
+  private handleSource(prefix: string): string {
+    const tz = this.tz();
+    const card = this.findCard(prefix);
+    if (!card) return '没找到这条记忆（id 是召回结果里行首的 8 位）。';
+    const out: string[] = [];
+    out.push(`【这条记忆】· ${card.id.slice(0, 8)} ${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 160)}（${card.kind}${card.status === 'retired' ? '，已退休' : ''}）`);
+
+    if (!card.src) {
+      out.push('这条没记出处（多半是导入的旧数据，或者写的时候对方半小时内没说话）。');
+    } else {
+      const when = formatLocal(card.src.ts, tz);
+      const sess = this.sessionIndexOf(card.src.ts, card.src.cursor);
+      const head = `写它的时候：${when}${sess ? ` · 当天第 ${sess} 段对话` : ''}`;
+      out.push(card.src.text ? `${head}\n原话：「${card.src.text}」` : `${head}\n（那句话没留下来，只记了时间）`);
+      const around = this.rawAround(card.src.cursor, 2);
+      if (around.length) {
+        out.push('前后：');
+        for (const e of around) {
+          const mark = e.cursor === card.src.cursor ? '  ← 就是这句' : '';
+          out.push(`· [${formatLocal(e.ts, tz).slice(5)}] ${clip(e.text, 80)}${mark}`);
+        }
+      } else {
+        out.push('（这段原文不在最近几天里，用 mode=archive 搜那天的话）');
+      }
+    }
+    if (card.supersedes?.length) out.push(`这条接替了：${card.supersedes.map((id) => id.slice(0, 8)).join(' ')}`);
+    return out.join('\n');
+  }
+
+  /** 某条原文前后各 n 句（只在本机最近的热数据里找）。 */
+  private rawAround(cursor: number, n: number) {
+    if (!Number.isFinite(cursor) || cursor < 0) return [];
+    const all = this.raw.all().slice().sort((a, b) => a.cursor - b.cursor);
+    const at = all.findIndex((e) => e.cursor === cursor);
+    if (at < 0) return [];
+    return all.slice(Math.max(0, at - n), at + n + 1);
+  }
+
+  /** 当天第几段对话：间隔超过 30 分钟就算新的一段。 */
+  private sessionIndexOf(ts: string, cursor: number): number {
+    const tz = this.tz();
+    const day = formatLocal(ts, tz).slice(0, 10);
+    let idx = 0;
+    let prev = 0;
+    for (const e of this.raw.all().slice().sort((a, b) => a.cursor - b.cursor)) {
+      if (formatLocal(e.ts, tz).slice(0, 10) !== day) continue;
+      const t = Date.parse(e.ts);
+      if (!prev || t - prev > 30 * 60_000) idx += 1;
+      prev = t;
+      if (e.cursor >= cursor) break;
+    }
+    return idx;
   }
 
   private handlePlan(args: Record<string, unknown>): string {
@@ -1116,7 +1191,8 @@ export class MemoryCoreWorld implements World {
       scanned += events.length;
       for (const e of events) {
         const key = e.senderKey ?? '';
-        if (!re.test(key)) {
+        // captureAll 打开时不再看白名单：群里的其他人、自己发的都记
+        if (!cfg.captureAll && !re.test(key)) {
           // 记几个被挡掉的 key，出问题时一眼能看出是白名单还是正文的问题
           if (key && keys.size < 6) keys.add(key);
           continue;

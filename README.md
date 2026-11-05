@@ -30,7 +30,7 @@ pnpm add cortico-world-memory-core
 | 工具 | 作用 |
 |---|---|
 | `mcore_write` | 写一条记忆。`kind` 五选一，可带 `weight` / `tags` / `dueAt`；**`promise` 必须带 `dueAt`**，不知道时间会被拒绝并提示先问，确实没有截止时间就写 `dueAt: "none"`；传 `closes` 表示「这条替代了某条旧的」 |
-| `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；结果分两档：「对得上」和「可能沾边，别当准」；带 `↩` 的是改写过的记忆 + 当时那句原话的日期；`mode=open` 看没做完的承诺和今天的安排；`mode=archive` 翻更早的归档原文 |
+| `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；结果分两档：「对得上」和「可能沾边，别当准」；带 `↩` 的是改写过的记忆 + 当时那句原话的日期；给 `id` 可以看这条记忆的出处（当时那句原话 + 前后文）；`mode=open` 看没做完的承诺和今天的安排；`mode=archive` 翻更早的归档原文 |
 | `mcore_state` | 角色自己的精力 / 心情 / 正在做什么 / 在哪 / 睡没睡 |
 | `mcore_plan` | 今天的日程（增、勾、清空） |
 
@@ -114,6 +114,7 @@ pnpm add cortico-world-memory-core
 | `proactiveEnabled` | `true` | 主动开口 |
 | `proactiveMinGapMin` / `proactiveDailyCap` | `100` / `3` | 主动间隔与每日上限 |
 | `nightlyConsolidate` | `false` | 夜间整理。夜里把当天原文备成一份材料，**下次开口时**才交付（不占额外请求，是一次普通的工具调用） |
+| `captureAll` | `false` | 关着只记白名单里那个人的话；打开后群里其他人、以及自己发的消息也落盘。只影响原文库，不增加每轮成本 |
 | `chillAfterDays` | `30` | 多久没被想起就沉到冷层（只沉低权重的「经历 / 临时」，事实、自我、未完成的承诺不动）。每天最多沉 4 条，最多占 25%。冷层不参与预激活和「最近」，搜索仍能找到，可一键回暖；`0` = 关闭 |
 | `siteEnabled` / `sitePort` | `true` / `7801` | 记忆地图 |
 

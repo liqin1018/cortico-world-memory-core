@@ -40,11 +40,13 @@ export const TOOL_SPECS: ToolSpec[] = [
     name: 'mcore_recall',
     description:
       '查记忆。给 query 按内容搜（同时搜最近 7 天原文和工作区笔记），不给就看最近几条；'
-      + 'mode=open 看没做完的承诺和今天的安排，mode=archive 翻归档（要 query）。'
+      + 'mode=open 看没做完的承诺和今天的安排，mode=archive 翻归档（要 query）；'
+      + '给 id 看这条记忆的出处（当时的原话 + 前后文）。'
       + '对方提到人或旧事、问「你还记得吗」时先查再答。',
     parameters: obj(
       {
         query: { type: 'string', description: '关键词就够' },
+        id: { type: 'string', description: '看某条记忆的出处（传行首 8 位），会给出当时的原话和前后文' },
         kind: { type: 'string', enum: ['fact', 'self', 'episode', 'promise', 'note'], description: '只看某一类' },
         mode: { type: 'string', enum: ['search', 'recent', 'open', 'archive'], description: '默认 search' },
         days: { type: 'integer', description: '只看最近这么多天' },

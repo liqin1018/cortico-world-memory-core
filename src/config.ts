@@ -33,6 +33,8 @@ export interface MemoryCoreConfig {
   captureTurns: boolean;
   /** 哪些来源算「对方在跟我说话」，正则匹配 senderKey。 */
   captureSenders: string;
+  /** 放开白名单：所有外部消息都记（含群聊、以及自己发的）。默认关。 */
+  captureAll: boolean;
   /** 短于这么多字的对话原文不存（过滤表情、单字、口令回执）。 */
   captureMinLength: number;
   /** 对话原文保留天数（热数据，超过就按天归档）。 */
@@ -93,6 +95,7 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   // 真实 senderKey 长这样：private:1940008084（QQ 私聊）、desktop-pet.chat（桌宠对话）。
   // 老默认值一个都匹配不上，导致原文库一直是 0 行 —— 改这个 regex 前先看一遍 data/runs/*/events.jsonl。
   captureSenders: '^(desktop-pet\\.(chat|message|answer|voice)|private:|qq\\.private\\.|starpost\\.private\\.)',
+  captureAll: false,
   captureMinLength: 4,
   rawRetentionDays: 7,
   rawArchiveDays: 90,
@@ -186,6 +189,12 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
         title: '存对话原文',
         description: '把对方最近的私聊存成一行行本地文本，供「搜最近聊过什么」。只存这一个方向，不存你自己说的话。',
         'x-hot': true,
+      },
+      'worlds.memory-core.captureAll': {
+        type: 'boolean',
+        label: '所有人说的话都记',
+        description: '关着只记白名单里的人（默认），打开后群里其他人、以及你自己发的也会落盘。落盘只影响原文库，不增加每轮成本。',
+        default: false,
       },
       'worlds.memory-core.captureSenders': {
         type: 'string',

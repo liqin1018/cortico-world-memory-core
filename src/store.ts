@@ -41,7 +41,8 @@ export interface Card {
    * 写这条时最近的一句原文（游标 + 时间）。卡片是模型改写过的结论，
    * 不是原话；留一个指针，召回时才敢说「这条能追到当时的哪一句」。
    */
-  src?: { cursor: number; ts: string };
+  /** 写这条时，对方最近说的那句原话（截断 80 字，已脱敏）。有它才追得回证据。 */
+  src?: { cursor: number; ts: string; text?: string };
   /** 被「主动想起」过几次（每轮预激活），和 uses（工具召回）分开记。 */
   primedCount?: number;
   lastPrimedAt?: string;
@@ -334,7 +335,8 @@ export class CardStore {
     origin?: string;
     createdAt?: string;
     scope?: string;
-    src?: { cursor: number; ts: string };
+    /** 写这条时，对方最近说的那句原话（截断 80 字，已脱敏）。有它才追得回证据。 */
+  src?: { cursor: number; ts: string; text?: string };
   }): { card: Card; merged: boolean } {
     const text = String(input.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
     const key = normalizeText(text);
@@ -719,7 +721,14 @@ export class CardStore {
         src:
           c.src && typeof c.src === 'object' && Number.isFinite(Number((c.src as { cursor?: unknown }).cursor))
             && typeof (c.src as { ts?: unknown }).ts === 'string'
-            ? { cursor: Number((c.src as { cursor: number }).cursor), ts: String((c.src as { ts: string }).ts) }
+            ? {
+                cursor: Number((c.src as { cursor: number }).cursor),
+                ts: String((c.src as { ts: string }).ts),
+                text:
+                  typeof (c.src as { text?: unknown }).text === 'string'
+                    ? String((c.src as { text: string }).text).slice(0, 80)
+                    : undefined,
+              }
             : undefined,
         primedCount: Number.isFinite(Number(c.primedCount)) ? Number(c.primedCount) : undefined,
         lastPrimedAt: typeof c.lastPrimedAt === 'string' ? c.lastPrimedAt : undefined,

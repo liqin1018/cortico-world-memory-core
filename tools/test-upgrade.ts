@@ -569,5 +569,90 @@ const ok = (cond: boolean, msg: string) => {
   await world.stop();
 }
 
+/* 21) 出处：卡片带当时那句原话，能查回前后文 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-src-'));
+  const now = new Date();
+  const events = [
+    { cursor: 9, ts: new Date(now.getTime() - 60_000).toISOString(), senderKey: 'qq.private.1001', text: '晚饭吃啥' },
+    { cursor: 10, ts: new Date(now.getTime() - 30_000).toISOString(), senderKey: 'qq.private.1001', text: '我不吃香菜，电话 13800138000' },
+  ];
+  const host = {
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    store: {
+      range: (q: { origin?: string; limit?: number; fromCursor?: number; toCursor?: number } = {}) => {
+        if (q.origin && q.origin !== 'external') return [];
+        let list = events;
+        if (typeof q.fromCursor === 'number') list = list.filter((e) => e.cursor >= q.fromCursor!);
+        if (typeof q.toCursor === 'number') list = list.filter((e) => e.cursor <= q.toCursor!);
+        if (q.limit) list = list.slice(-q.limit);
+        return list;
+      },
+    },
+    pushEvent: async () => true,
+  };
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start(host as never);
+  const store = (world as unknown as { store: CardStore; raw: RawLog }).store;
+  const raw = (world as unknown as { raw: RawLog }).raw;
+  raw.add([
+    { cursor: 9, ts: events[0].ts, sender: 'qq.*', text: '晚饭吃啥' },
+    { cursor: 10, ts: events[1].ts, sender: 'qq.*', text: '我不吃香菜，电话 13800138000' },
+  ]);
+
+  const write = world.tools().find((t) => t.name === 'mcore_write')!;
+  const recall = world.tools().find((t) => t.name === 'mcore_recall')!;
+  await write.handler({ kind: 'fact', text: '她不吃香菜', weight: 0.8 });
+  const card = store.active().find((c) => c.text.includes('香菜'))!;
+
+  ok(Boolean(card.src?.text), '21) 写卡时把原话存进了 src');
+  ok(String(card.src?.text).includes('[号码]'), '21) 原话里的长号码被抹掉');
+  ok(!String(card.src?.text).includes('13800138000'), '21) 原始号码没有落进卡片');
+
+  const src = String(await recall.handler({ id: card.id.slice(0, 8) }));
+  ok(src.includes('原话：「我不吃香菜'), '21) 出处视图给出当时的原话');
+  ok(src.includes('就是这句'), '21) 前后文里标出是哪一句');
+  ok(src.includes('晚饭吃啥'), '21) 前后文带上了上一句');
+  await world.stop();
+}
+
+/* 22) captureAll：关着只记白名单，开着谁的话都记 */
+{
+  const makeWorld = async (captureAll: boolean) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'mcore-cap-'));
+    const now = new Date().toISOString();
+    const events = [
+      { cursor: 1, ts: now, senderKey: 'group.stranger', text: '群里路人说的一句挺长的话' },
+    ];
+    const host = {
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+      store: { range: (q: { limit?: number } = {}) => (q.limit ? events.slice(-1) : events) },
+      pushEvent: async () => true,
+    };
+    const world = new MemoryCoreWorld({
+      cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true, captureAll },
+      dataDir,
+      timezone: 'Asia/Shanghai',
+      botDir: dataDir,
+    } as never);
+    await world.start(host as never);
+    (world as unknown as { capture(backfill: boolean): void }).capture(true);
+    return world;
+  };
+
+  const off = await makeWorld(false);
+  ok((off as unknown as { raw: RawLog }).raw.size === 0, '22) 白名单关着时，路人的话不落盘');
+  await off.stop();
+
+  const on = await makeWorld(true);
+  ok((on as unknown as { raw: RawLog }).raw.size === 1, '22) captureAll 打开后，路人的话也落盘');
+  await on.stop();
+}
+
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);

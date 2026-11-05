@@ -54,6 +54,47 @@ export function scoreText(queryTokens: readonly string[], text: string): number 
   return overlap(queryTokens, text);
 }
 
+/** BM25 参数：k1 控制词频饱和，b 控制长度归一。都是常用值。 */
+const BM25_K1 = 1.2;
+const BM25_B = 0.75;
+
+/**
+ * 给整个候选池建一次倒排：每张卡的词频、长度、以及每个词出现在几张卡里。
+ * 卡片数量级是几十到几百，一次构建比「每个词去 includes 一遍」更省。
+ */
+function buildIndex(pool: readonly Card[]) {
+  const df = new Map<string, number>();
+  const tf = new Map<string, Map<string, number>>();
+  const len = new Map<string, number>();
+  let total = 0;
+  for (const card of pool) {
+    const tokens = tokenize(card.text);
+    const local = new Map<string, number>();
+    for (const t of tokens) local.set(t, (local.get(t) ?? 0) + 1);
+    tf.set(card.id, local);
+    len.set(card.id, tokens.length);
+    total += tokens.length;
+    for (const t of local.keys()) df.set(t, (df.get(t) ?? 0) + 1);
+  }
+  return { df, tf, len, avg: pool.length ? total / pool.length || 1 : 1, n: pool.length };
+}
+
+/** 一张卡的 BM25 分。字面越贴、词越罕见、卡越短，分越高。 */
+function bm25(index: ReturnType<typeof buildIndex>, card: Card, tokens: readonly string[]): number {
+  const local = index.tf.get(card.id);
+  if (!local) return 0;
+  const dl = index.len.get(card.id) ?? 0;
+  let sum = 0;
+  for (const token of new Set(tokens)) {
+    const f = local.get(token);
+    if (!f) continue;
+    const df = index.df.get(token) ?? 0;
+    const idf = Math.log(1 + (index.n - df + 0.5) / (df + 0.5));
+    sum += (idf * (f * (BM25_K1 + 1))) / (f + BM25_K1 * (1 - BM25_B + (BM25_B * dl) / index.avg));
+  }
+  return sum;
+}
+
 function overlap(queryTokens: readonly string[], text: string): number {
   if (!queryTokens.length) return 0;
   const hay = String(text ?? '').toLowerCase();
@@ -161,8 +202,11 @@ export function rankCardsScored(cards: readonly Card[], opts: RankOptions): Scor
     for (const [tag, n] of df) if (n > cap) commonTag.add(tag);
   }
 
+  const index = buildIndex(pool);
   const scored = pool.map((card) => {
-    const lexical = overlap(queryTokens, card.text);
+    // BM25 取代原来的「二元组命中数 / 长度」：词频和长度都归一过了，
+    // 一句话里反复出现同一个词不会把分堆爆，长卡也不会因为词多而虚高。
+    const lexical = bm25(index, card, queryTokens);
     // 标签单独算一次：对方说「生日」时，打了 #生日 的卡要比正文里顺嘴提到的排得靠前。
     // 但泛标签会把所有卡都拉高，所以先剔掉「到处都是」的那些。
     const weakTags = card.tags.filter((t) => !commonTag.has(t));
@@ -176,7 +220,9 @@ export function rankCardsScored(cards: readonly Card[], opts: RankOptions): Scor
       opts.useAging && Number.isFinite(lastUsed)
         ? 0.15 * Math.exp(-(now - lastUsed) / (30 * 86_400_000))
         : 0;
-    const score = lexical * 2 + tagHit * 1.2 + card.weight * 0.5 + freshness(card.createdAt, now) + glow - used;
+    // BM25 的量级是 0~25，乘 0.25 压回和旧版相近的比例：正文相关仍占主导，
+    // 但权重 / 新鲜度 / 用进废退还能在近似分数之间起作用。
+    const score = lexical * 0.25 + tagHit * 1.2 + card.weight * 0.5 + freshness(card.createdAt, now) + glow - used;
     // 双字以上的命中数：预激活用它挡单字噪音
     const hay = `${card.text} ${card.tags.join(' ')}`.toLowerCase();
     let bigrams = 0;
@@ -193,7 +239,9 @@ export function rankCardsScored(cards: readonly Card[], opts: RankOptions): Scor
       ...x,
       // 两个实词对上、或一个实词且词面确实重合，才算「对得上」；
       // 只靠权重和新鲜度浮上来的，一律算「可能沾边」。
-      tier: (x.bigrams >= 2 || (x.bigrams >= 1 && x.lexical >= 0.45) || x.tagHit >= 0.6 || x.lexical >= 1.2
+      // 分档靠「实词命中数」而不是裸分：BM25 在「今天」这种高频词上也会给分，
+      // 但停用词表已经把这类词从 bigrams 里剔掉了，用它分档才不会被带偏。
+      tier: (x.bigrams >= 2 || (x.bigrams >= 1 && x.lexical >= 2.2) || x.tagHit >= 0.6
         ? 'strong'
         : 'weak') as 'strong' | 'weak',
     }));
