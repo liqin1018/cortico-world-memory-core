@@ -153,5 +153,33 @@ const ok = (cond: boolean, msg: string) => {
   ok(outside.length === 0, '7) 窗口外的归档不返回');
 }
 
+/* 8) 来源脱敏 + 原文单条删除 */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-priv-'));
+  const log = new RawLog(dir, 7, 90);
+  const now = new Date().toISOString();
+  log.add([
+    { cursor: 1, ts: now, sender: 'private:1940008084', text: '这条的来源要被脱敏，删掉它试试' },
+    { cursor: 2, ts: now, sender: 'desktop-pet.chat', text: '这条不该被删' },
+    { cursor: 3, ts: new Date(Date.now() - 40 * 86_400_000).toISOString(), sender: 'qq.private:1940008084', text: '四十天前的这条要进归档' },
+  ]);
+  ok(log.all()[0].sender === 'private:…8084', `8) 写入即脱敏（${log.all()[0].sender}）`);
+  ok(log.all()[1].sender === 'desktop-pet.chat', '8) 不是号码的来源原样保留');
+  ok(!readFileSync(join(dir, 'turns.jsonl'), 'utf8').includes('1940008084'), '8) turns.jsonl 里没有完整号码');
+  const arch = log.readArchive(90, 100);
+  ok(arch.length === 1 && arch[0].sender === 'qq.private:…8084', '8) 归档读取也脱敏');
+
+  // 老版本写下的归档文件：手动造一行带号码的，scrub 之后应该消失
+  writeFileSync(join(dir, 'archive', '2026-09-01.jsonl'), `${JSON.stringify({ cursor: 77, ts: '2026-09-01T10:00:00.000Z', sender: 'private:1940008084', text: '老格式的一行' })}\n`, 'utf8');
+  const scrubbed = log.scrubArchiveSenders();
+  ok(scrubbed === 1, `8) 老归档抹掉 1 行（实际 ${scrubbed}）`);
+  ok(!readFileSync(join(dir, 'archive', '2026-09-01.jsonl'), 'utf8').includes('1940008084'), '8) 归档文件里也没有号码了');
+
+  ok(log.remove(1) && !log.all().some((e) => e.cursor === 1), '8) 热数据能按 cursor 删');
+  ok(log.remove(3), '8) 归档里的那条也能删');
+  ok(log.readArchive(90, 100).every((e) => e.cursor !== 3), '8) 删完归档里也查不到');
+  ok(!log.remove(999), '8) 不存在的 cursor 返回 false');
+}
+
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);

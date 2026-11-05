@@ -270,8 +270,7 @@ async function load({ quiet = false } = {}) {
   try {
     const snap = await api('/api/snapshot');
     S.snap = snap;
-    if (!quiet) render();
-    else render();
+    render();
   } catch (err) {
     toast(`读不到数据：${err.message}`, true);
   }
@@ -1170,6 +1169,7 @@ function turnRow(t) {
   return `<div class="turn">
     <div><time>${fmtTime(t.ts).slice(6)}</time><div class="who">${esc(shortSender(t.sender))}</div></div>
     <div class="msg">${highlight(t.text.slice(0, 600), S.query)}</div>
+    <button class="turn-del" data-cursor="${t.cursor}" title="删掉这条原文" aria-label="删掉这条原文">×</button>
   </div>`;
 }
 
@@ -1949,6 +1949,25 @@ $('#view-timeline').addEventListener('click', (event) => {
   const item = event.target.closest('[data-id]');
   if (!item) return;
   selectCard(item.dataset.id);
+});
+
+// 原文单条删除：按钮随行渲染，用事件委托，重绘后不用重新绑定
+$('#view-turns').addEventListener('click', async (event) => {
+  const btn = event.target.closest('.turn-del');
+  if (!btn) return;
+  const cursor = Number(btn.dataset.cursor);
+  if (!Number.isFinite(cursor)) return;
+  if (!confirm('删掉这条原文？只删本地这一行，对方那边不受影响。删了补不回来。')) return;
+  try {
+    const res = await api(`/api/turns/${cursor}`, { method: 'DELETE', body: '{}' });
+    if (!res?.removed) return toast('没找到这条', true);
+    S.archiveQ = '';
+    S.archive = null;
+    await load();
+    toast('已删掉');
+  } catch (err) {
+    toast(`删除失败：${err.message}`, true);
+  }
 });
 
 $('#view-table').addEventListener('click', (event) => {

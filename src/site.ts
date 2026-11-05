@@ -100,6 +100,8 @@ export interface SiteHooks {
   importData(payload: Record<string, unknown>): ImportReport;
   /** 在按天归档的旧原文里搜（页面上的「含归档」开关）。 */
   archiveSearch(q: string, days: number, limit: number): RawEntry[];
+  /** 删掉一条原文（热数据或归档）。 */
+  deleteTurn(cursor: number): boolean;
   patchState(input: Record<string, unknown>): CoreState;
   planAction(input: Record<string, unknown>): unknown;
   exportAll(fmt: string): { body: string; mime: string; filename: string };
@@ -232,6 +234,10 @@ export class MemorySite {
       const days = Number(url.searchParams.get('days') ?? 90) || 90;
       const limit = Number(url.searchParams.get('limit') ?? 40) || 40;
       return this.json(rsp, 200, q ? this.hooks.archiveSearch(q, days, limit) : []);
+    }
+    const turnMatch = /^\/api\/turns\/(\d{1,12})$/.exec(path);
+    if (turnMatch && req.method === 'DELETE') {
+      return this.json(rsp, 200, { removed: this.hooks.deleteTurn(Number(turnMatch[1])) });
     }
     if (path === '/api/import' && req.method === 'POST') {
       let body: Record<string, unknown>;

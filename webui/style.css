@@ -719,3 +719,18 @@ kbd {
   font-size: 11px; color: var(--warn);
 }
 .archive-head span { color: var(--ink-dim); }
+
+/* ── 原文单条删除 ───────────────────────────────────── */
+.turn { position: relative; padding-right: 22px; }
+.turn-del {
+  position: absolute; right: 4px; top: 6px;
+  width: 20px; height: 20px; padding: 0;
+  display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--ink-dim);
+  font-size: 14px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity .12s ease;
+}
+.turn:hover .turn-del, .turn-del:focus-visible { opacity: 1; }
+.turn-del:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); background: var(--paper); }
+@media (hover: none) { .turn-del { opacity: .55; } }

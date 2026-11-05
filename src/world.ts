@@ -20,6 +20,7 @@ import {
   CardStore,
   RawLog,
   ensureDir,
+  maskSender,
   readJson,
   writeJson,
   type CardKind,
@@ -266,6 +267,19 @@ export class MemoryCoreWorld implements World {
     this.stopped = false;
     ensureDir(this.dataDir);
     this.importOnce();
+    // 归档里可能还留着老格式的明文账号，抹一次就够（热数据在 load 时已经抹了）
+    if (!this.state.senderScrubbedAt) {
+      const scrubbed = this.raw.scrubArchiveSenders();
+      this.state.senderScrubbedAt = new Date().toISOString();
+      this.save(true);
+      if (scrubbed) {
+        try {
+          host.log?.info?.(`[memory-core] 归档里 ${scrubbed} 条来源已脱敏`);
+        } catch {
+          // 日志失败不影响挂载
+        }
+      }
+    }
     try {
       host.log?.info?.('[memory-core] 启动', {
         dataDir: this.dataDir,
@@ -463,6 +477,7 @@ export class MemoryCoreWorld implements World {
         const cap = Math.min(50, Math.max(1, Number(limit) || 40));
         return rankRaw(this.raw.readArchive(span, 20000), query, cap);
       },
+      deleteTurn: (cursor: number) => this.raw.remove(cursor),
       mergeCards: (keepId: string, dropIds: string[]) => this.store.merge(keepId, dropIds),
       purgeCards: (ids: string[]) => this.store.purge(ids),
       patchState: (input: Record<string, unknown>) => {
@@ -596,7 +611,7 @@ export class MemoryCoreWorld implements World {
       entries.push({
         cursor,
         ts: typeof t.ts === 'string' && t.ts ? t.ts : new Date().toISOString(),
-        sender: String(t.sender ?? 'import').slice(0, 40),
+        sender: maskSender(String(t.sender ?? 'import')).slice(0, 40),
         text: t.text.slice(0, 200),
       });
     }
@@ -981,7 +996,7 @@ export class MemoryCoreWorld implements World {
         if (/^\[(表情包|CQ:|图片)/.test(text)) continue;
         if (/^[\p{P}\p{S}\s]+$/u.test(text)) continue;
         if (/^\[[^\]]{0,12}\]$/.test(text.trim())) continue;
-        items.push({ cursor: e.cursor, ts: e.ts, sender: key.slice(0, 40), text });
+        items.push({ cursor: e.cursor, ts: e.ts, sender: maskSender(key).slice(0, 40), text });
       }
       // 按窗口边界推进，不按「最后一个匹配到的 cursor」：窗口里可能一条 external 都没有
       from = to;

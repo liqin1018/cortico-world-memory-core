@@ -84,6 +84,8 @@ export interface CoreState {
     backfillFrom?: number;
     backfillTo?: number;
   };
+  /** 归档里的账号号码抹过一次之后记下时间，不再重复扫。 */
+  senderScrubbedAt?: string;
 }
 
 export function ensureDir(dir: string): void {
@@ -143,6 +145,14 @@ export function normalizeText(text: string): string {
 
 function clamp01(n: number): number {
   return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.5;
+}
+
+/**
+ * 原文的来源里带平台账号（`private:1940008084`），原样落盘就是明文号码，
+ * 目录一同步到网盘或备份就跟着泄露。只留后 4 位——够区分是谁，不够认出是谁。
+ */
+export function maskSender(sender: string): string {
+  return String(sender ?? '').replace(/\d{5,}/g, (digits) => `…${digits.slice(-4)}`);
 }
 
 export class CardStore {
@@ -709,6 +719,8 @@ export class RawLog {
           if (!e || typeof e.text !== 'string') continue;
           const at = Date.parse(e.ts);
           if (!Number.isFinite(at)) continue;
+          // 读的时候就脱敏：即便文件里还留着老格式，界面和快照也不会露号码
+          e.sender = maskSender(e.sender);
           (at >= cutoff ? kept : expired).push(e);
         } catch {
           // 跳过坏行
@@ -809,6 +821,77 @@ export class RawLog {
     return { days: files.length, bytes, oldest: files[0]?.day ?? '' };
   }
 
+  /** 删掉一条原文：热数据从内存表里摘掉重写；在归档里就改写那天对应的文件。 */
+  remove(cursor: number): boolean {
+    const id = Number(cursor);
+    if (!Number.isFinite(id)) return false;
+    const at = this.entries.findIndex((e) => e.cursor === id);
+    if (at >= 0) {
+      this.entries.splice(at, 1);
+      this.rewrite();
+      return true;
+    }
+    for (const { file } of this.archiveFiles()) {
+      try {
+        const lines = readFileSync(file, 'utf8').split('\n');
+        let hit = -1;
+        for (let i = 0; i < lines.length; i += 1) {
+          if (!lines[i].trim()) continue;
+          try {
+            if ((JSON.parse(lines[i]) as RawEntry).cursor === id) {
+              hit = i;
+              break;
+            }
+          } catch {
+            // 坏行跳过
+          }
+        }
+        if (hit < 0) continue;
+        lines.splice(hit, 1);
+        const kept = lines.filter((line) => line.trim());
+        if (!kept.length) {
+          // 那天只有这一条，删完就把空文件收掉，免得归档里留个 0 行的日期
+          unlinkSync(file);
+        } else {
+          writeAtomic(file, `${kept.join('\n')}\n`);
+        }
+        return true;
+      } catch {
+        // 读不了就试下一个文件
+      }
+    }
+    return false;
+  }
+
+  /** 热数据里的旧格式已经由 load() 的 rewrite 抹掉了，这里只处理 archive/ 下的文件。 */
+  scrubArchiveSenders(): number {
+    let changed = 0;
+    for (const { file } of this.archiveFiles()) {
+      try {
+        const lines = readFileSync(file, 'utf8').split('\n');
+        let dirty = false;
+        const out = lines.map((line) => {
+          if (!line.trim()) return line;
+          try {
+            const e = JSON.parse(line) as RawEntry;
+            const masked = maskSender(e.sender);
+            if (masked === e.sender) return line;
+            e.sender = masked;
+            dirty = true;
+            changed += 1;
+            return JSON.stringify(e);
+          } catch {
+            return line;
+          }
+        });
+        if (dirty) writeAtomic(file, out.join('\n'));
+      } catch {
+        // 读不了就跳过
+      }
+    }
+    return changed;
+  }
+
   /** 归档总行数。健康面板按需调用，不进热路径。 */
   archiveLines(): number {
     let n = 0;
@@ -835,7 +918,10 @@ export class RawLog {
           if (!line.trim()) continue;
           try {
             const e = JSON.parse(line) as RawEntry;
-            if (e && typeof e.text === 'string') out.push(e);
+            if (e && typeof e.text === 'string') {
+              e.sender = maskSender(e.sender);
+              out.push(e);
+            }
           } catch {
             // 跳过坏行
           }
@@ -878,7 +964,10 @@ export class RawLog {
     if (!items.length) return 0;
     // 回放时一次几千行，用 Set 判重，别拿 some() 平方级扫
     const have = new Set(this.entries.map((e) => e.cursor));
-    const fresh = items.filter((item) => !have.has(item.cursor));
+    const fresh = items
+      .filter((item) => !have.has(item.cursor))
+      // 落盘前统一脱敏：不管调用方传的是原始 key 还是已脱敏的，这里都兜一道
+      .map((item) => ({ ...item, sender: maskSender(item.sender) }));
     if (!fresh.length) return 0;
     this.entries.push(...fresh);
     const cutoff = Date.now() - this.retentionDays * 86_400_000;
