@@ -244,7 +244,7 @@ const ok = (cond: boolean, msg: string) => {
   ok(Boolean(card?.src?.ts), '10) 写卡时记下了出处时间');
   const recalled = String(await recall.handler({ query: '香菜' }));
   ok(recalled.includes('↩'), '10) 召回输出带 ↩ 出处标记');
-  ok(recalled.includes('改写过的记忆'), '10) 召回首行说明这是改写不是原话');
+  ok(recalled.includes('卡片本身是改写的'), '10) 召回首行说明这是改写不是原话');
 
   // 预激活：应该推一条，并记一次 primed
   pushed.length = 0;
@@ -462,6 +462,33 @@ const ok = (cond: boolean, msg: string) => {
   const promptChars = readFileSync(join(root, 'ENV_PROMPT.md'), 'utf8').trim().length;
   ok(schemaChars <= 2600, `16) schema ≤ 2600 字符（现在 ${schemaChars}）`);
   ok(promptChars <= 480, `16) 提示词 ≤ 480 字（现在 ${promptChars}）`);
+}
+
+/* 17) 召回分两档口气：对得上的 / 只是沾边 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-tier-'));
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const write = world.tools().find((t) => t.name === 'mcore_write')!;
+  const recall = world.tools().find((t) => t.name === 'mcore_recall')!;
+
+  await write.handler({ kind: 'fact', text: '她不吃香菜，点外卖千万别放香菜', weight: 0.7 });
+  await write.handler({ kind: 'note', text: '完全无关的一条高权重记忆', weight: 1 });
+
+  const out = String(await recall.handler({ mode: 'search', query: '香菜' }));
+  const iStrong = out.indexOf('【对得上】');
+  const iWeak = out.indexOf('【可能沾边');
+  const iCilantro = out.indexOf('不吃香菜');
+  const iUnrelated = out.indexOf('完全无关');
+  ok(iStrong >= 0 && iCilantro > iStrong, '17) 真命中的卡归到「对得上」');
+  ok(iWeak >= 0 && iUnrelated > iWeak, '17) 只靠权重浮上来的卡归到「可能沾边」');
+  ok(iCilantro < iWeak, '17) 两档顺序：先对得上，后沾边');
+  await world.stop();
 }
 
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');

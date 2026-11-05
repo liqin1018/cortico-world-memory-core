@@ -29,7 +29,7 @@ import {
   type RawEntry,
 } from './store.ts';
 import { importLegacy } from './importer.ts';
-import { rankCards, rankRaw } from './recall.ts';
+import { rankCards, rankCardsScored, rankRaw } from './recall.ts';
 import { advance, createInitialState, moodLabel } from './state.ts';
 import { formatLocal, hmToMinutes, humanSpan, inWindow, localParts } from './time.ts';
 import { MemorySite, type HealthReport, type ImportReport, type Snapshot } from './site.ts';
@@ -821,13 +821,15 @@ export class MemoryCoreWorld implements World {
       return out.join('\n').slice(0, maxChars + 40);
     }
 
-    const cards = rankCards(mode === 'search' ? this.store.active() : this.store.recallable(), {
+    const ranked = rankCardsScored(mode === 'search' ? this.store.active() : this.store.recallable(), {
       query: mode === 'search' ? query : undefined,
       kind: str(args.kind, 20) || undefined,
       days: num(args.days, 0, 0, 3650) || undefined,
       limit,
       useAging: this.cfg().recallUseAging !== false,
     });
+    const cards = ranked.map((x) => x.card);
+    const strongIds = new Set(ranked.filter((x) => x.tier === 'strong').map((x) => x.card.id));
 
     if (mode === 'search' && query) {
       const hits = rankRaw(this.raw.all(), query, Math.max(1, Math.min(3, limit)));
@@ -843,17 +845,37 @@ export class MemoryCoreWorld implements World {
     }
 
     const withSrc = cards.filter((c) => c.src);
-    if (withSrc.length) push('（带 ↩ 的是改写过的记忆，不是原话；能追到写它时最近的那句）');
+    if (withSrc.length) push('（↩ 是写它时最近的那句原话；卡片本身是改写的）');
     if (cards.some((c) => c.coldAt)) push('（❄ 是很久没被想起的旧记忆，仅供参考）');
-    for (const card of cards) {
+
+    const cardLine = (card: (typeof cards)[number]) => {
       const tag = card.kind === 'fact' ? '' : `（${card.kind}）`;
       const when = card.src ? formatLocal(card.src.ts, tz).slice(5, 10) : '';
       const mark = when ? ` ↩${when}` : '';
       const cold = card.coldAt ? '❄' : '';
       // 行首这 8 位就是 id：改口/作废时要用它传给 mcore_write 的 closes
-      push(
-        `· ${card.id.slice(0, 8)} ${cold}${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 110)}${tag}${mark}`,
-      );
+      return `· ${card.id.slice(0, 8)} ${cold}${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 110)}${tag}${mark}`;
+    };
+
+    // 搜出来的分两档：真对得上的，和只是靠权重/新鲜度浮上来的。
+    // 不分档的话，模型会把「有点像」当成「就是」，这也是它编故事的起点。
+    if (mode === 'search' && query && cards.length) {
+      const strong = cards.filter((c) => strongIds.has(c.id));
+      const weak = cards.filter((c) => !strongIds.has(c.id));
+      if (strong.length) {
+        push('【对得上】');
+        for (const card of strong) push(cardLine(card));
+        if (weak.length) {
+          push('【可能沾边，别当准】');
+          for (const card of weak) push(cardLine(card));
+        }
+      } else {
+        // 一条都没真对上时，别拿五条沾边的充数：明说没有，最多给两条线索
+        push('【没有对得上的，下面只是沾边】');
+        for (const card of weak.slice(0, 2)) push(cardLine(card));
+      }
+    } else {
+      for (const card of cards) push(cardLine(card));
     }
     this.store.touch(cards.map((c) => c.id));
     return lines.length ? lines.join('\n') : '没有找到相关的记忆。';

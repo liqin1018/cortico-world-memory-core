@@ -92,7 +92,24 @@ export interface RankOptions {
   minBigrams?: number;
 }
 
-export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
+export interface ScoredCard {
+  card: Card;
+  score: number;
+  /** 词面重叠（归一化后） */
+  lexical: number;
+  /** 标签命中 */
+  tagHit: number;
+  /** 命中了几个「实词二元组」——比分数更好解释「像不像」 */
+  bigrams: number;
+  /** strong = 真的对上了，weak = 只是靠权重/新鲜度浮上来的 */
+  tier: 'strong' | 'weak';
+}
+
+/**
+ * 和 rankCards 同一套打分，但把分数和判断依据一起返回。
+ * 召回要分两档口气，就靠这里的 tier，不在外面重新算一遍。
+ */
+export function rankCardsScored(cards: readonly Card[], opts: RankOptions): ScoredCard[] {
   const now = opts.now ?? Date.now();
   const queryTokens = tokenize(opts.query ?? '');
   let pool = cards.filter((c) => {
@@ -109,7 +126,14 @@ export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
       const sb = freshness(b.createdAt, now) + b.weight * 0.6;
       return sb - sa;
     });
-    return pool.slice(0, opts.limit);
+    return pool.slice(0, opts.limit).map((card) => ({
+      card,
+      score: 0,
+      lexical: 0,
+      tagHit: 0,
+      bigrams: 0,
+      tier: 'strong' as const,
+    }));
   }
   // 「今天」「回来」这类词到处都是，命中它们不算线索。文档频率只能挡掉极端常见的，
   // 挡不住「今天」（5/66）这种——所以再加一张停用词表。
@@ -148,13 +172,24 @@ export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
     for (const token of new Set(queryTokens)) {
       if (isContentToken(token) && !common.has(token) && hay.includes(token)) bigrams += 1;
     }
-    return { card, score, hit: lexical > 0 || tagHit > 0, bigrams };
+    return { card, score, lexical, tagHit, hit: lexical > 0 || tagHit > 0, bigrams };
   });
   scored.sort((a, b) => b.score - a.score);
   return scored
     .filter((x) => x.score > 0.25 && (!opts.requireHit || x.hit) && (!opts.minBigrams || x.bigrams >= opts.minBigrams))
     .slice(0, opts.limit)
-    .map((x) => x.card);
+    .map((x) => ({
+      ...x,
+      // 两个实词对上、或一个实词且词面确实重合，才算「对得上」；
+      // 只靠权重和新鲜度浮上来的，一律算「可能沾边」。
+      tier: (x.bigrams >= 2 || (x.bigrams >= 1 && x.lexical >= 0.45) || x.tagHit >= 0.6 || x.lexical >= 1.2
+        ? 'strong'
+        : 'weak') as 'strong' | 'weak',
+    }));
+}
+
+export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
+  return rankCardsScored(cards, opts).map((x) => x.card);
 }
 
 export function rankRaw(entries: readonly RawEntry[], query: string, limit: number): RawEntry[] {
