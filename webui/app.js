@@ -201,9 +201,17 @@ async function purgeWithUndo(ids) {
   return removed;
 }
 
-async function api(path, init = {}) {  const res = await fetch(path, {
+// 服务端把一次性令牌写进首页的 meta，写接口靠它认「这是自己发的页面」
+const TOKEN = document.querySelector('meta[name="mcore-token"]')?.content ?? '';
+
+async function api(path, init = {}) {
+  const res = await fetch(path, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
+    headers: {
+      'content-type': 'application/json',
+      ...(TOKEN ? { 'x-mcore-token': TOKEN } : {}),
+      ...(init.headers ?? {}),
+    },
   });
   if (!res.ok) {
     let msg = `${res.status}`;

@@ -1,14 +1,17 @@
 /**
  * 记忆地图的本地站点：一个只绑 127.0.0.1 的小 HTTP 服务。
  *
- * 四条约束（和参考实现一致，改的时候别破坏）：
- *   1) **只绑 127.0.0.1** —— 站点没有身份认证，记忆不能对局域网露面；
- *   2) **端口被占就 +1 重试**，起不来不算致命，只少一个链接；
- *   3) 写操作走**插件内存里的同一份 store**，不直接改文件 ——
+ * 六条约束（改的时候别破坏）：
+ *   1) **只绑 127.0.0.1** —— 站点不对局域网露面；
+ *   2) **只认 127.0.0.1 / localhost 这两个 Host** —— 别人把域名解析到本机（DNS 重绑定）也进不来；
+ *   3) **写接口必须带页面注入的一次性令牌** —— 别的网页能打 localhost，但拿不到这个令牌；
+ *   4) 端口被占就 +1 重试，起不来不算致命，只少一个链接；
+ *   5) 写操作走**插件内存里的同一份 store**，不直接改文件 ——
  *      否则宿主下一次 save() 会用内存状态把文件覆盖回去；
- *   4) 读文件接口只允许在已扫描的目录内，防目录穿越。
+ *   6) 读文件接口只允许在已扫描的目录内，防目录穿越。
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import type { Card, CoreState, PlanItem, RawEntry } from './store.ts';
@@ -112,6 +115,8 @@ export class MemorySite {
   private port: number | null = null;
   private readonly basePort: number;
   private readonly webDir: string;
+  /** 进程级一次性令牌：只有这个站点发出的页面才知道，别的网页拿不到。 */
+  private readonly token = randomBytes(18).toString('base64url');
 
   constructor(private readonly hooks: SiteHooks, webDir: string, port: number) {
     this.webDir = resolve(webDir);
@@ -174,6 +179,9 @@ export class MemorySite {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const path = url.pathname;
 
+    // 只认本机这两个 Host：域名解析到 127.0.0.1（DNS 重绑定）会在这一步被挡掉
+    if (!this.hostOk(req)) return this.json(rsp, 403, { error: '只能通过 127.0.0.1 或 localhost 打开' });
+
     if (path.startsWith('/api/')) return this.api(req, rsp, url, path);
 
     // 无域名、无认证：只服务本机，禁止被 iframe 之外的地方引用
@@ -182,7 +190,29 @@ export class MemorySite {
     return this.sendFile(rsp, file);
   }
 
+  private hostOk(req: IncomingMessage): boolean {
+    const host = String(req.headers.host ?? '').toLowerCase();
+    const port = this.port ?? this.basePort;
+    return host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+  }
+
+  /** 定长比较，别用 === 给出计时侧信道。 */
+  private tokenOk(req: IncomingMessage): boolean {
+    const got = String(req.headers['x-mcore-token'] ?? '');
+    if (got.length !== this.token.length) return false;
+    try {
+      return timingSafeEqual(Buffer.from(got), Buffer.from(this.token));
+    } catch {
+      return false;
+    }
+  }
+
   private async api(req: IncomingMessage, rsp: ServerResponse, url: URL, path: string): Promise<void> {
+    // GET/HEAD 是只读，随便看（跨站也读不到内容，因为没有 CORS 头）；
+    // 其余方法一律要令牌——跨站页面能打到这里，但发不出这个头。
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !this.tokenOk(req)) {
+      return this.json(rsp, 403, { error: '写操作需要页面上带过来的一次性令牌，刷新一下页面' });
+    }
     if (path === '/api/snapshot' && req.method === 'GET') {
       return this.json(rsp, 200, this.hooks.snapshot());
     }
@@ -318,8 +348,22 @@ export class MemorySite {
     try {
       if (!statSync(full).isFile()) return this.text(rsp, 404, 'not found');
       const body = readFileSync(full);
+      const type = MIME[extname(full).toLowerCase()] ?? 'application/octet-stream';
+      // 首页注入一次性令牌：app.js 把它放进每个写请求的头里。
+      // 这份 HTML 不进缓存，否则进程重启后旧令牌会让所有写操作 403。
+      if (safe === 'index.html') {
+        const html = body
+          .toString('utf8')
+          .replace('<head>', `<head>\n<meta name="mcore-token" content="${this.token}">`);
+        rsp.writeHead(200, {
+          'content-type': type,
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+        });
+        return rsp.end(html);
+      }
       rsp.writeHead(200, {
-        'content-type': MIME[extname(full).toLowerCase()] ?? 'application/octet-stream',
+        'content-type': type,
         'cache-control': 'no-cache',
         'x-content-type-options': 'nosniff',
       });

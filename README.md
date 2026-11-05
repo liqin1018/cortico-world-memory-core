@@ -65,12 +65,16 @@ pnpm add cortico-world-memory-core
 
 导出与导入：`⋯` 菜单里能导出 Markdown / JSON。JSON 是整包（卡片 + 原文 + 日程 + 状态），可以原样 `POST /api/import` 导回来——**只加不覆盖**，同 id 或同类型同文本会跳过，所以重复导同一个文件是安全的。水位只往前推，不会被旧备份倒回去。
 
-四条实现约束（改的时候别破坏）：
+六条实现约束（改的时候别破坏）：
 
-1. 只绑 `127.0.0.1` —— 站点没有身份认证，不能对局域网露面；
-2. 端口被占自动 +1，起不来只少一个链接，不影响 World 挂载；
-3. 写操作走插件内存里的同一个 store，不直接改文件，否则宿主下一次 `save()` 会把文件覆盖回去；
-4. `/api/doc` 只允许读配置里列出的目录。
+1. 只绑 `127.0.0.1` —— 不对局域网露面；
+2. 只认 `127.0.0.1` / `localhost` 这两个 Host —— 别的域名解析到本机（DNS 重绑定）连首页都拿不到；
+3. 写接口必须带首页注入的一次性令牌（`x-mcore-token`）—— 任何网页都能打 localhost，但发不出这个头；令牌每次启动重新生成，旧页面写失败会提示刷新；
+4. 端口被占自动 +1，起不来只少一个链接，不影响 World 挂载；
+5. 写操作走插件内存里的同一个 store，不直接改文件，否则宿主下一次 `save()` 会把文件覆盖回去；
+6. `/api/doc` 只允许读配置里列出的目录。
+
+只读接口（`/api/snapshot`、`/api/export`、`/api/health` 等）不校验令牌：跨站拿不到响应体（没有 CORS 头），导出链接也要能直接下载。真正值钱的是「写」和「读到内容」这两件事，前者靠令牌，后者靠 Host 白名单。
 
 ## 省 token 的四条硬约束
 
@@ -138,6 +142,12 @@ node --experimental-transform-types tools/test-capture.ts
 
 # World 层：用假宿主真启动一次，跑写、查、closes 取代
 node --experimental-transform-types tools/test-world.ts
+
+# 站点鉴权：令牌注入、伪造 Host、无令牌/错令牌、导出仍可下载
+node --experimental-transform-types tools/test-site-auth.ts
+
+# 前端静态自检：DOM id、S 属性、前后端接口对账
+node --experimental-transform-types tools/audit-webui.ts
 
 # 改了工具或提示词之后，重新生成市场详情页读的自描述
 node --experimental-transform-types tools/build-describe.ts

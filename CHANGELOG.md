@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.4
+
+站点安全修复。来源是仓库 issue #1（Phantivia，扩展市场审查）：写接口没有鉴权，任意网页可跨站写卡。**方向完全正确**，我按他给的两条建议都做了，并且先复现了四个事实：`text/plain` 跨站 POST 能写进去、伪造 `Host` 能拿到 200、`OPTIONS` 是 404、响应里没有 CORS 头。
+
+- **写接口加一次性令牌**：`MemorySite` 启动时生成 `randomBytes(18)`，首页 HTML 注入 `<meta name="mcore-token">`，`app.js` 把它放进所有写请求的 `x-mcore-token` 头。校验用 `timingSafeEqual`。其他网页能打 localhost，但拿不到这个头。
+- **Host 白名单**：只认 `127.0.0.1:<port>` 和 `localhost:<port>`，其他 Host 一律 403——包括首页。这条专门挡 DNS 重绑定：光有令牌挡不住重绑定（攻击者能读到带令牌的首页），光有 Host 白名单也挡不住用户浏览器里的普通 CSRF。
+- **首页 `no-store`**：令牌每次启动都换，页面缓存住旧令牌会让所有写操作 403。
+- **只读接口保持无令牌**：`/api/snapshot`、`/api/export` 等跨站读不到响应体（没有 CORS 头），导出链接也要能直接下载。
+- **新增 `tools/test-site-auth.ts`**：10 项，覆盖令牌注入、伪造 Host、无令牌/错令牌/正确令牌、`localhost` 放行、导出仍可下载。
+
+顺带一提：`Content-Type` 那条建议（只接受 `application/json`）我没单独做。因为写了「必须带令牌」之后它已经没有增量——没有令牌时，无论什么 Content-Type 都进不来。
+
 ## 0.4.3
 
 隐私和手滑这两件事，都是之前列出来一直没做的。
