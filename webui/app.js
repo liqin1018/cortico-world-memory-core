@@ -42,7 +42,7 @@ const S = {
 };
 
 /** 视图清单：加一个视图只要在这里加名字，HTML 里加 tab 和容器。 */
-const VIEWS = ['graph', 'timeline', 'table', 'turns', 'docs', 'health', 'galaxy'];
+const VIEWS = ['galaxy', 'graph', 'timeline', 'table', 'turns', 'docs', 'health'];
 
 const el = {
   search: $('#search'),
@@ -983,12 +983,13 @@ class Graph {
   }
 }
 
-/* ── 记忆星图 ───────────────────────────────────────── */
+/* ── 记忆星图（3D） ─────────────────────────────────── */
 
 const GALAXY_KIND = { fact: '事实', self: '自己', episode: '经历', promise: '承诺', note: '临时' };
 const GALAXY_COLOR = { fact: '#8ef0dc', self: '#9ab8ff', episode: '#ffc078', promise: '#ff9ec4', note: '#c3ccd8' };
+const GALAXY_CAM = 1900;
 
-/** 固定种子：同一批卡片每次画出来的星图一样，截图也稳定。 */
+/** 固定种子：同一批卡片每次布出来的星系一样。 */
 function seeded(seed) {
   let s = seed >>> 0 || 1;
   return () => {
@@ -997,35 +998,7 @@ function seeded(seed) {
   };
 }
 
-/** 一圈点的平滑闭合路径（凸包外扩之后用）。 */
-function closedPath(pts, pad) {
-  const path = new Path2D();
-  if (pts.length < 3) {
-    const [x, y] = pts[0] ?? [0, 0];
-    path.arc(x, y, 26, 0, Math.PI * 2);
-    return path;
-  }
-  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
-  const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-  const ex = pts.map(([x, y]) => {
-    const dx = x - cx;
-    const dy = y - cy;
-    const d = Math.hypot(dx, dy) || 1;
-    return [x + (dx / d) * pad, y + (dy / d) * pad];
-  });
-  const n = ex.length;
-  for (let i = 0; i < n; i += 1) {
-    const p0 = ex[(i - 1 + n) % n];
-    const p1 = ex[i];
-    const p2 = ex[(i + 1) % n];
-    const mid = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
-    const next = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
-    if (i === 0) path.moveTo(mid[0], mid[1]);
-    path.quadraticCurveTo(p1[0], p1[1], next[0], next[1]);
-  }
-  path.closePath();
-  return path;
-}
+const clampNum = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /** 圆角矩形：不用 ctx.roundRect，老一点的宿主内核没有这个 API。 */
 function roundRect(ctx, x, y, w, h, r) {
@@ -1039,25 +1012,6 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function hull2d(points) {
-  const p = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  if (p.length < 3) return p;
-  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  const lower = [];
-  for (const q of p) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
-    lower.push(q);
-  }
-  const upper = [];
-  for (let i = p.length - 1; i >= 0; i -= 1) {
-    const q = p[i];
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
-    upper.push(q);
-  }
-  lower.pop();
-  upper.pop();
-  return lower.concat(upper);
-}
 
 class Galaxy {
   constructor(canvas) {
@@ -1065,34 +1019,117 @@ class Galaxy {
     this.ctx = canvas.getContext('2d');
     this.cards = [];
     this.nodes = [];
+    this.links = [];
     this.regions = [];
-    this.sprites = new Map();
+    this.dust = [];
+    this.far = [];
+    this.glow = new Map();
     this.hover = null;
     this.selected = null;
     this.signature = null;
+    this.onSelect = null;
+
+    this.yaw = 0.55;
+    this.pitch = 0.46;
+    this.zoom = 1;
+    const gx = new URLSearchParams(location.search).get('gx');
+    if (gx) {
+      const [a, b, c] = gx.split(',').map(Number);
+      if (Number.isFinite(a)) this.yaw = a;
+      if (Number.isFinite(b)) this.pitch = clampNum(b, -1.35, 1.35);
+      if (Number.isFinite(c)) this.zoom = clampNum(c, 0.45, 3.2);
+    }
+    this.vy = 0;
+    this.vp = 0;
+    this.dragging = false;
+    this.lastInteract = 0;
+    this.frame = 0;
+    this.running = false;
+    this.tickCount = 0;
+
     this.w = 0;
     this.h = 0;
     this.dpr = 1;
-
+    this.buildSprites();
+    this.bind();
     new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
-    canvas.addEventListener('pointermove', (e) => {
-      const hit = this.pick(e);
+    this.resize();
+  }
+
+  bind() {
+    const c = this.canvas;
+    let last = null;
+    let down = null;
+
+    c.addEventListener('pointerdown', (e) => {
+      this.dragging = true;
+      this.vy = 0;
+      this.vp = 0;
+      last = { x: e.clientX, y: e.clientY };
+      down = { x: e.clientX, y: e.clientY };
+      this.lastInteract = performance.now();
+      c.setPointerCapture(e.pointerId);
+      c.classList.add('grabbing');
+    });
+
+    c.addEventListener('pointermove', (e) => {
+      if (this.dragging && last) {
+        const dx = e.clientX - last.x;
+        const dy = e.clientY - last.y;
+        last = { x: e.clientX, y: e.clientY };
+        this.yaw += dx * 0.0062;
+        this.pitch = clampNum(this.pitch + dy * 0.0062, -1.35, 1.35);
+        this.vy = dx * 0.0062;
+        this.vp = dy * 0.0062;
+        this.lastInteract = performance.now();
+        return;
+      }
+      const hit = this.pick(e.clientX, e.clientY);
       const id = hit ? hit.card.id : null;
       if (id === this.hover) return;
       this.hover = id;
-      canvas.style.cursor = hit ? 'pointer' : 'default';
-      this.draw();
+      c.style.cursor = hit ? 'pointer' : 'grab';
     });
-    canvas.addEventListener('pointerleave', () => {
-      if (!this.hover) return;
+
+    const end = () => {
+      this.dragging = false;
+      last = null;
+      this.lastInteract = performance.now();
+      c.classList.remove('grabbing');
+    };
+    c.addEventListener('pointerup', end);
+    c.addEventListener('pointercancel', end);
+    c.addEventListener('pointerleave', () => {
       this.hover = null;
-      this.draw();
     });
-    canvas.addEventListener('click', (e) => {
-      const hit = this.pick(e);
+
+    c.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        this.zoom = clampNum(this.zoom * Math.exp(-e.deltaY * 0.0013), 0.45, 3.2);
+        this.lastInteract = performance.now();
+      },
+      { passive: false },
+    );
+
+    c.addEventListener('dblclick', () => {
+      this.yaw = 0.55;
+      this.pitch = 0.46;
+      this.zoom = 1;
+      this.vy = 0;
+      this.vp = 0;
+      this.lastInteract = performance.now();
+    });
+
+    c.addEventListener('click', (e) => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if (moved > 5) return;
+      const hit = this.pick(e.clientX, e.clientY);
       if (this.onSelect) this.onSelect(hit ? hit.card.id : null);
     });
-    this.resize();
   }
 
   resize() {
@@ -1105,52 +1142,67 @@ class Galaxy {
     this.canvas.width = Math.round(w * this.dpr);
     this.canvas.height = Math.round(h * this.dpr);
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    this.buildSprites();
-    if (this.cards.length) {
-      this.layout();
-      this.paintBackdrop();
-      this.draw();
-    }
+    // 空数据也要重排：不然空态会拿构造时那个 360×320 的小尺寸画
+    this.buildScene();
+  }
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    const loop = () => {
+      if (!this.running) return;
+      this.step();
+      this.frame = requestAnimationFrame(loop);
+    };
+    this.frame = requestAnimationFrame(loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
   }
 
   setData(cards) {
     this.cards = cards.slice();
-    this.layout();
-    this.paintBackdrop();
-    this.draw();
+    this.buildScene();
   }
 
-  /** 一团柔光，按类型缓存成小图，画节点时直接贴，省得每帧建渐变。 */
+  /** 光晕贴图：5 种类型各一张，画节点时直接贴。 */
   buildSprites() {
-    this.sprites.clear();
+    this.glow.clear();
     for (const [kind, color] of Object.entries(GALAXY_COLOR)) {
       const size = 128;
-      const c = document.createElement('canvas');
-      c.width = size;
-      c.height = size;
-      const g = c.getContext('2d');
+      const cv = document.createElement('canvas');
+      cv.width = size;
+      cv.height = size;
+      const g = cv.getContext('2d');
       const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
       grad.addColorStop(0, color);
-      grad.addColorStop(0.18, color);
+      grad.addColorStop(0.1, color);
+      grad.addColorStop(0.45, `${color}55`);
       grad.addColorStop(1, 'rgba(0,0,0,0)');
       g.fillStyle = grad;
       g.fillRect(0, 0, size, size);
-      this.sprites.set(kind, c);
+      this.glow.set(kind, cv);
     }
   }
 
-  layout() {
+  /** 场景：星系尘埃、远景星、记忆星、星座连线，全部在世界坐标里。 */
+  buildScene() {
     const W = this.w;
     const H = this.h;
     this.CX = W * 0.5;
     this.CY = H * 0.52;
     this.RCORE = Math.min(W, H) * 0.1;
-    this.RMAX = Math.min(W, H) * 0.43;
-    const TILT = 0.9;
-    const GOLD = Math.PI * (3 - Math.sqrt(5));
+    this.RMAX = Math.min(W, H) * 0.4;
+    const RMAX = this.RMAX;
+    const RCORE = this.RCORE;
     const rnd = seeded(20261105);
     const gauss = () => (rnd() + rnd() + rnd() - 1.5) / 1.5;
+    const GOLD = Math.PI * (3 - Math.sqrt(5));
 
+    // 分区
     const tagCount = new Map();
     for (const c of this.cards) for (const t of c.tags ?? []) tagCount.set(t, (tagCount.get(t) ?? 0) + 1);
     const groups = new Map();
@@ -1161,53 +1213,54 @@ class Galaxy {
       groups.get(key).cards.push(c);
     }
     const regions = [...groups.values()].sort((a, b) => b.cards.length - a.cards.length);
-    const RIN = this.RCORE * 2;
+    const RIN = RCORE * 2;
 
     regions.forEach((g, i) => {
       const f = (i + 0.5) / regions.length;
-      const rc = RIN + (this.RMAX - RIN) * Math.pow(f, 0.92);
-      const tc = -Math.PI * 0.5 + f * Math.PI * 2 * 1.55 + 0.55 * Math.log(rc / this.RCORE);
-      g.cx = this.CX + Math.cos(tc) * rc;
-      g.cy = this.CY + Math.sin(tc) * rc * TILT;
-      g.br = 24 + Math.sqrt(g.cards.length) * 8.6;
+      const rc = RIN + (RMAX - RIN) * Math.pow(f, 0.92);
+      const tc = -Math.PI * 0.5 + f * Math.PI * 2 * 1.55 + 0.55 * Math.log(rc / RCORE);
+      g.x = Math.cos(tc) * rc;
+      g.y = Math.sin(tc) * rc;
+      g.br = 24 + Math.sqrt(g.cards.length) * 6.8;
     });
 
-    // 团与团排斥：别让光带叠在一起
+    // 团间排斥（在盘面上）
     for (let iter = 0; iter < 80; iter += 1) {
       for (let i = 0; i < regions.length; i += 1) {
         for (let j = i + 1; j < regions.length; j += 1) {
           const a = regions[i];
           const b = regions[j];
-          let dx = b.cx - a.cx;
-          let dy = b.cy - a.cy;
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
           const d = Math.hypot(dx, dy) || 1;
-          const need = (a.br + b.br) * 1.1;
+          const need = (a.br + b.br) * 1.16;
           if (d < need) {
             const push = (need - d) / 2;
             dx /= d;
             dy /= d;
-            a.cx -= dx * push;
-            a.cy -= dy * push;
-            b.cx += dx * push;
-            b.cy += dy * push;
+            a.x -= dx * push;
+            a.y -= dy * push;
+            b.x += dx * push;
+            b.y += dy * push;
           }
         }
       }
       for (const g of regions) {
-        const dx = g.cx - this.CX;
-        const dy = (g.cy - this.CY) / TILT;
-        const d = Math.hypot(dx, dy) || 1;
-        const lim = this.RMAX * 0.92;
+        const d = Math.hypot(g.x, g.y) || 1;
+        const lim = RMAX * 0.9;
         if (d > lim) {
-          g.cx = this.CX + (dx / d) * lim;
-          g.cy = this.CY + ((dy / d) * lim) * TILT;
+          g.x = (g.x / d) * lim;
+          g.y = (g.y / d) * lim;
         }
       }
     }
 
+    // 记忆星
     const now = Date.now();
+    this.nodes = [];
     for (const g of regions) {
-      g.nodes = g.cards.map((card, k) => {
+      g.nodes = [];
+      g.cards.forEach((card, k) => {
         const u = (k + 0.55) / g.cards.length;
         const rr = g.br * Math.sqrt(u) * (0.9 + rnd() * 0.2);
         const aa = k * GOLD + g.name.length * 1.3 + (rnd() - 0.5) * 0.45;
@@ -1215,224 +1268,236 @@ class Galaxy {
         const uses = (card.uses ?? 0) + (card.primedCount ?? 0);
         const last = Date.parse(card.lastUsedAt ?? card.createdAt ?? '') || now;
         const quiet = Math.max(0, (now - last) / 86_400_000);
-        // 亮度 = 最近被想起；冷层再压一档
-        const bright = (0.35 + 0.65 * Math.exp(-quiet / 45)) * (card.coldAt ? 0.42 : 1);
-        return {
+        const bright = (0.4 + 0.6 * Math.exp(-quiet / 45)) * (card.coldAt ? 0.42 : 1);
+        const node = {
           card,
-          x: g.cx + Math.cos(aa) * rr,
-          y: g.cy + Math.sin(aa) * rr * 0.92,
-          r: 1.4 + weight * 3.4 + Math.min(2.2, Math.sqrt(uses) * 0.7),
+          x: g.x + Math.cos(aa) * rr,
+          y: g.y + Math.sin(aa) * rr,
+          z: gauss() * RMAX * 0.05,
+          r: 1.6 + weight * 3.6 + Math.min(2.4, Math.sqrt(uses) * 0.7),
           bright,
+          region: g,
         };
+        g.nodes.push(node);
+        this.nodes.push(node);
       });
-      g.hub = g.nodes.reduce((b, d) => (Number(d.card.weight) > Number(b.card.weight) ? d : b), g.nodes[0]);
+      g.hub = g.nodes.reduce((b, n) => (Number(n.card.weight) > Number(b.card.weight) ? n : b), g.nodes[0]);
       g.color = GALAXY_COLOR[g.hub.card.kind] ?? '#c3ccd8';
-      g.path = closedPath(hull2d(g.nodes.map((d) => [d.x, d.y])), 18);
+      g.rz = gauss() * RMAX * 0.04;
     }
 
-    this.regions = regions;
-    this.nodes = regions.flatMap((g) => g.nodes);
-    this.kindCounts = {};
-    for (const c of this.cards) this.kindCounts[c.kind] = (this.kindCounts[c.kind] ?? 0) + 1;
-    this.placeLabels();
-  }
-
-  placeLabels() {
-    const ctx = this.ctx;
-    const placed = [];
-    for (const g of this.regions) {
-      const t = Math.atan2(g.cy - this.CY, g.cx - this.CX);
-      const far = Math.max(...g.nodes.map((d) => Math.hypot(d.x - g.cx, d.y - g.cy)));
-      let lx = g.cx + Math.cos(t) * (far + 30);
-      let ly = g.cy + Math.sin(t) * (far + 24);
-      lx = Math.max(58, Math.min(this.w - 58, lx));
-      ly = Math.max(62, Math.min(this.h - 42, ly));
-      const align = Math.abs(Math.cos(t)) < 0.25 ? 'center' : Math.cos(t) < 0 ? 'right' : 'left';
-      const text = `${g.name} · ${g.cards.length}`;
-      ctx.font = '600 13px -apple-system, "PingFang SC", sans-serif';
-      const width = ctx.measureText(text).width;
-      const box = {
-        x: align === 'center' ? lx - width / 2 : align === 'right' ? lx - width : lx,
-        y: ly - 9,
-        w: width,
-        h: 18,
-      };
-      for (let pass = 0; pass < 30; pass += 1) {
-        const hit = placed.find(
-          (b) => box.x < b.x + b.w + 10 && box.x + box.w + 10 > b.x && box.y < b.y + b.h + 6 && box.y + box.h + 6 > b.y,
-        );
-        if (!hit) break;
-        box.y += 20;
-        if (box.y > this.h - 40) box.y = 56;
+    // 星座连线：每个团连最近的两颗
+    this.links = [];
+    for (const g of regions) {
+      for (let i = 0; i < g.nodes.length; i += 1) {
+        const a = g.nodes[i];
+        g.nodes
+          .map((b, j) => ({ b, j, d: Math.hypot(b.x - a.x, b.y - a.y) }))
+          .filter((o) => o.j !== i)
+          .sort((x, y) => x.d - y.d)
+          .slice(0, 2)
+          .forEach(({ b, d }) => {
+            if (d <= g.br * 2.5) this.links.push([a, b, g.color]);
+          });
       }
-      placed.push(box);
-      g.label = {
-        text,
-        x: align === 'center' ? box.x + box.w / 2 : align === 'right' ? box.x + box.w : box.x,
-        y: box.y + 9,
-        align,
-        from: [g.cx + Math.cos(t) * far, g.cy + Math.sin(t) * far],
-      };
     }
-  }
 
-  paintBackdrop() {
-    const { w: W, h: H, RCORE, RMAX, CX, CY } = this;
-    const c = document.createElement('canvas');
-    c.width = Math.round(W * this.dpr);
-    c.height = Math.round(H * this.dpr);
-    const ctx = c.getContext('2d');
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    const TILT = 0.9;
-    const rnd = seeded(773311);
-    const gauss = () => (rnd() + rnd() + rnd() - 1.5) / 1.5;
-
-    ctx.fillStyle = '#04050c';
-    ctx.fillRect(0, 0, W, H);
-
-    const blob = (x, y, r, rgb, a) => {
-      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-      g.addColorStop(0, `rgba(${rgb},${a})`);
-      g.addColorStop(0.5, `rgba(${rgb},${a * 0.4})`);
-      g.addColorStop(1, `rgba(${rgb},0)`);
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-    };
-
-    for (const [rgb, a] of [
-      ['120,80,200', 0.12],
-      ['40,160,170', 0.1],
-      ['190,70,140', 0.08],
-      ['210,160,90', 0.07],
-    ]) {
-      const ang = rnd() * Math.PI * 2;
-      const rr = RMAX * (0.6 + rnd() * 0.45);
-      blob(CX + Math.cos(ang) * rr, CY + Math.sin(ang) * rr * TILT, RMAX * 0.5, rgb, a);
+    // 星系尘埃：两条旋臂
+    this.dust = [];
+    for (let arm = 0; arm < 2; arm += 1) {
+      const base = arm * Math.PI;
+      for (let i = 0; i < 2200; i += 1) {
+        const s = Math.pow(rnd(), 0.78);
+        const r = RCORE * 0.4 + s * RMAX * 1.05;
+        const t = base + 2.05 * Math.PI * s + gauss() * 0.08;
+        this.dust.push({
+          x: Math.cos(t) * r + gauss() * 6,
+          y: Math.sin(t) * r + gauss() * 6,
+          z: gauss() * RMAX * 0.035,
+          size: 0.5 + Math.pow(rnd(), 2) * 1.8,
+          alpha: (0.12 + rnd() * 0.34) * (1 - s * 0.25),
+          color: s < 0.28 ? '255,238,205' : arm === 0 ? '150,225,255' : '195,170,255',
+        });
+      }
     }
 
     // 远景星
-    for (let i = 0; i < 900; i += 1) {
-      const x = rnd() * W;
-      const y = rnd() * H;
-      const dd = Math.hypot(x - CX, (y - CY) / TILT);
-      if (dd < RMAX * 1.05 && rnd() < 0.6) continue;
-      ctx.globalAlpha = 0.12 + rnd() * 0.5;
-      ctx.fillStyle = rnd() > 0.88 ? '#ffe3c4' : '#d6e6ff';
-      const r = 0.25 + Math.pow(rnd(), 3) * 1.4;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
+    this.far = [];
+    for (let i = 0; i < 420; i += 1) {
+      const a = rnd() * Math.PI * 2;
+      const rr = RMAX * (1.15 + rnd() * 1.1);
+      this.far.push({
+        x: Math.cos(a) * rr,
+        y: Math.sin(a) * rr,
+        z: (rnd() - 0.5) * RMAX * 1.4,
+        size: 0.4 + rnd() * 1.1,
+        alpha: 0.2 + rnd() * 0.5,
+      });
     }
-    ctx.globalAlpha = 1;
 
-    // 两条旋臂的尘埃
-    ctx.globalCompositeOperation = 'lighter';
-    blob(CX, CY, RMAX * 1.02, '110,140,210', 0.07);
-    for (let arm = 0; arm < 2; arm += 1) {
-      const base = arm * Math.PI;
-      for (let i = 0; i < 3200; i += 1) {
-        const s = Math.pow(rnd(), 0.78);
-        const r = RCORE * 0.4 + s * RMAX * 1.06;
-        const t = base + 2.05 * Math.PI * s + gauss() * 0.075;
-        const rr = r + gauss() * RMAX * 0.045;
-        const x = CX + Math.cos(t) * rr;
-        const y = CY + Math.sin(t) * rr * TILT;
-        const a = (0.06 + rnd() * 0.16) * (1 - s * 0.3);
-        ctx.fillStyle =
-          s < 0.28 ? `rgba(255,238,205,${a})` : arm === 0 ? `rgba(150,225,255,${a})` : `rgba(195,170,255,${a})`;
-        ctx.beginPath();
-        ctx.arc(x, y, 0.5 + Math.pow(rnd(), 2) * 1.5, 0, Math.PI * 2);
-        ctx.fill();
+    this.regions = regions;
+    this.kindCounts = {};
+    for (const c of this.cards) this.kindCounts[c.kind] = (this.kindCounts[c.kind] ?? 0) + 1;
+    this.projected = new Map();
+    this.step(true);
+  }
+
+  /** 世界坐标 → 屏幕。先绕 Y 转，再绕 X 抬，最后做一点透视。 */
+  project(x, y, z) {
+    const cy = Math.cos(this.yaw);
+    const sy = Math.sin(this.yaw);
+    const X = x * cy + z * sy;
+    const Z1 = -x * sy + z * cy;
+    const cp = Math.cos(this.pitch);
+    const sp = Math.sin(this.pitch);
+    const Y = y * cp - Z1 * sp;
+    const Z = y * sp + Z1 * cp;
+    const depth = Z + GALAXY_CAM;
+    if (depth < 120) return null;
+    const k = (GALAXY_CAM / depth) * this.zoom;
+    return { x: this.CX + X * k, y: this.CY + Y * k, k, depth };
+  }
+
+  step(once = false) {
+    const now = performance.now();
+    if (!this.dragging) {
+      // 惯性
+      if (Math.abs(this.vy) > 0.00002 || Math.abs(this.vp) > 0.00002) {
+        this.yaw += this.vy;
+        this.pitch = clampNum(this.pitch + this.vp, -1.35, 1.35);
+        this.vy *= 0.94;
+        this.vp *= 0.94;
+      } else if (now - this.lastInteract > 2600) {
+        // 静置时慢慢自转，像在轨观测
+        this.yaw += 0.0016;
       }
     }
-    blob(CX, CY, RCORE * 1.9, '255,240,205', 0.5);
-    blob(CX, CY, RCORE * 0.85, '255,251,236', 0.95);
-    blob(CX, CY, RCORE * 0.34, '255,255,252', 1);
-    for (let i = 0; i < 70; i += 1) {
-      const a = rnd() * Math.PI * 2;
-      const r = Math.pow(rnd(), 1.6) * RCORE * 0.7;
-      ctx.globalAlpha = 0.3 + rnd() * 0.6;
-      ctx.fillStyle = '#fff8e4';
-      ctx.beginPath();
-      ctx.arc(CX + Math.cos(a) * r, CY + Math.sin(a) * r * TILT, 0.4 + rnd() * 1, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'source-over';
-    this.bg = c;
+    this.draw();
+    this.tickCount += 1;
+    if (this.tickCount % 6 === 0) this.updateTelemetry();
+    if (!once) return;
   }
 
   draw() {
     const ctx = this.ctx;
+    const W = this.w;
+    const H = this.h;
     if (!ctx) return;
-    ctx.clearRect(0, 0, this.w, this.h);
-    if (this.bg) ctx.drawImage(this.bg, 0, 0, this.w, this.h);
-    if (!this.nodes.length) return;
+    ctx.clearRect(0, 0, W, H);
 
-    // 分区：很淡的填充 + 发光描边
-    for (const g of this.regions) {
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.fillStyle = g.color;
-      ctx.globalAlpha = 0.055;
-      ctx.fill(g.path);
-      ctx.restore();
-      ctx.save();
-      ctx.strokeStyle = g.color;
-      ctx.globalAlpha = 0.5;
-      ctx.lineWidth = 1;
-      ctx.shadowColor = g.color;
-      ctx.shadowBlur = 16;
-      ctx.stroke(g.path);
-      ctx.restore();
-    }
+    // 深空底
+    const bg = ctx.createRadialGradient(this.CX, this.CY, 0, this.CX, this.CY, Math.max(W, H) * 0.75);
+    bg.addColorStop(0, '#0a0e1c');
+    bg.addColorStop(0.55, '#05070f');
+    bg.addColorStop(1, '#020308');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
 
-    // 星座连线：每个团连最近的两颗
-    ctx.lineWidth = 0.65;
-    for (const g of this.regions) {
-      ctx.strokeStyle = g.color;
-      ctx.globalAlpha = 0.34;
-      for (let i = 0; i < g.nodes.length; i += 1) {
-        const a = g.nodes[i];
-        const near = g.nodes
-          .map((b, j) => ({ b, d: Math.hypot(b.x - a.x, b.y - a.y), j }))
-          .filter((o) => o.j !== i)
-          .sort((x, y) => x.d - y.d)
-          .slice(0, 2);
-        for (const { b, d } of near) {
-          if (d > g.br * 2.4) continue;
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
-        }
-      }
-    }
-    ctx.globalAlpha = 1;
+    // 没有记忆时也要有星空底：尘埃和远景星照画，只是没有星点和标签
 
-    // 星点
+    // 每个区一团淡淡的星云
     ctx.globalCompositeOperation = 'lighter';
-    for (const n of this.nodes) {
-      const sprite = this.sprites.get(n.card.kind) ?? this.sprites.get('note');
-      const size = n.r * 8;
-      ctx.globalAlpha = 0.55 * n.bright;
-      ctx.drawImage(sprite, n.x - size, n.y - size, size * 2, size * 2);
+    for (const g of this.regions) {
+      const p = this.project(g.x, g.y, g.rz ?? 0);
+      if (!p) continue;
+      const radius = g.br * 2.2 * p.k;
+      const grd = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
+      const hex = g.color;
+      grd.addColorStop(0, `${hex}22`);
+      grd.addColorStop(0.5, `${hex}0d`);
+      grd.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // 星系核心
+    const core = this.project(0, 0, 0);
+    if (core) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (const [mul, alpha] of [
+        [4.2, 0.12],
+        [2.2, 0.26],
+        [1.05, 0.55],
+      ]) {
+        const rr = this.RCORE * mul * core.k;
+        const grd = ctx.createRadialGradient(core.x, core.y, 0, core.x, core.y, rr);
+        grd.addColorStop(0, `rgba(255,246,220,${alpha})`);
+        grd.addColorStop(0.45, `rgba(255,232,190,${alpha * 0.45})`);
+        grd.addColorStop(1, 'rgba(255,220,170,0)');
+        ctx.fillStyle = grd;
+        ctx.beginPath();
+        ctx.arc(core.x, core.y, rr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = '#fffaf0';
+      ctx.beginPath();
+      ctx.arc(core.x, core.y, Math.max(2.5, this.RCORE * 0.12 * core.k), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // 收集并按深度排序（远的先画）
+    const items = [];
+    for (const d of this.dust) items.push({ z: d.z, kind: 'dust', d });
+    for (const s of this.far) items.push({ z: s.z, kind: 'far', d: s });
+    for (const n of this.nodes) items.push({ z: n.z, kind: 'node', d: n });
+    items.sort((a, b) => b.z - a.z);
+
+    ctx.globalCompositeOperation = 'lighter';
+    let linkDrawn = false;
+    for (const it of items) {
+      const d = it.d;
+      if (it.kind === 'dust') {
+        const p = this.project(d.x, d.y, d.z);
+        if (!p) continue;
+        ctx.globalAlpha = d.alpha * Math.min(1.4, p.k);
+        ctx.fillStyle = `rgba(${d.color},1)`;
+        const sz = Math.max(0.5, d.size * p.k);
+        ctx.fillRect(p.x - sz / 2, p.y - sz / 2, sz, sz);
+        continue;
+      }
+      if (it.kind === 'far') {
+        const p = this.project(d.x, d.y, d.z);
+        if (!p) continue;
+        ctx.globalAlpha = d.alpha * 0.7;
+        ctx.fillStyle = '#d6e6ff';
+        const sz = Math.max(0.4, d.size * p.k * 0.9);
+        ctx.fillRect(p.x, p.y, sz, sz);
+        continue;
+      }
+      // 连线先于节点画（同一层里节点压线）
+      if (!linkDrawn) {
+        linkDrawn = true;
+        this.drawLinks();
+      }
+      const n = d;
+      const p = this.project(n.x, n.y, n.z);
+      if (!p) continue;
+      this.projected.set(n.card.id, { x: p.x, y: p.y, k: p.k });
+      const sprite = this.glow.get(n.card.kind) ?? this.glow.get('note');
+      const size = n.r * p.k * 9;
+      ctx.globalAlpha = 0.42 * n.bright * Math.min(1.1, p.k);
+      ctx.drawImage(sprite, p.x - size, p.y - size, size * 2, size * 2);
       ctx.globalAlpha = n.bright;
       ctx.fillStyle = '#fff';
       ctx.beginPath();
-      ctx.arc(n.x, n.y, n.r * 0.6, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, Math.max(0.6, n.r * 0.55 * p.k), 0, Math.PI * 2);
       ctx.fill();
-      if (n.r > 4.1) {
+      if (n.r * p.k > 3.4) {
         ctx.globalAlpha = 0.3 * n.bright;
         ctx.strokeStyle = GALAXY_COLOR[n.card.kind] ?? '#c3ccd8';
         ctx.lineWidth = 0.7;
+        const arm = n.r * p.k * 4;
         ctx.beginPath();
-        ctx.moveTo(n.x - n.r * 3.6, n.y);
-        ctx.lineTo(n.x + n.r * 3.6, n.y);
-        ctx.moveTo(n.x, n.y - n.r * 3.6);
-        ctx.lineTo(n.x, n.y + n.r * 3.6);
+        ctx.moveTo(p.x - arm, p.y);
+        ctx.lineTo(p.x + arm, p.y);
+        ctx.moveTo(p.x, p.y - arm);
+        ctx.lineTo(p.x, p.y + arm);
         ctx.stroke();
       }
     }
@@ -1440,75 +1505,132 @@ class Galaxy {
     ctx.globalCompositeOperation = 'source-over';
 
     // 选中 / 悬停
-    const mark = (n, color, alpha) => {
-      ctx.strokeStyle = color;
+    const mark = (n, alpha) => {
+      const p = this.projected.get(n.card.id);
+      if (!p) return;
+      ctx.strokeStyle = '#fff';
       ctx.globalAlpha = alpha;
       ctx.lineWidth = 1.4;
       ctx.beginPath();
-      ctx.arc(n.x, n.y, n.r + 7, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, Math.max(6, n.r * p.k) + 7, 0, Math.PI * 2);
       ctx.stroke();
       ctx.globalAlpha = 1;
     };
     const sel = this.nodes.find((n) => n.card.id === this.selected);
-    if (sel) mark(sel, '#ffffff', 0.75);
+    if (sel) mark(sel, 0.7);
     const hov = this.nodes.find((n) => n.card.id === this.hover);
-    if (hov && hov !== sel) mark(hov, '#ffffff', 0.5);
+    if (hov && hov !== sel) mark(hov, 0.45);
 
-    // 分区标签
+    this.drawLabels();
+    if (hov) this.drawTip(hov);
+  }
+
+  drawLinks() {
+    const ctx = this.ctx;
+    ctx.lineWidth = 0.6;
+    for (const [a, b, color] of this.links) {
+      const pa = this.project(a.x, a.y, a.z);
+      const pb = this.project(b.x, b.y, b.z);
+      if (!pa || !pb) continue;
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.18 * Math.min(1, (pa.k + pb.k) / 2);
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** 标签贴着自己那团的外缘；两个撞上了就往下错开，别叠字。 */
+  drawLabels() {
+    const ctx = this.ctx;
+    const placed = [];
     ctx.textBaseline = 'middle';
+    ctx.font = '600 12px -apple-system, "PingFang SC", sans-serif';
     for (const g of this.regions) {
-      const l = g.label;
-      if (!l) continue;
-      const gap = Math.hypot(l.x - g.cx, l.y - g.cy);
-      const far = Math.max(...g.nodes.map((d) => Math.hypot(d.x - g.cx, d.y - g.cy)));
-      if (gap > far + 34) {
-        ctx.strokeStyle = g.color;
-        ctx.globalAlpha = 0.28;
-        ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.moveTo(l.from[0], l.from[1]);
-        ctx.lineTo(l.x - (l.align === 'left' ? 12 : -12), l.y - 8);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
+      const p = this.project(g.x, g.y, g.rz ?? 0);
+      if (!p) continue;
+      const pts = g.nodes.map((n) => this.projected.get(n.card.id)).filter(Boolean);
+      if (!pts.length) continue;
+
+      const far = Math.max(...pts.map((q) => Math.hypot(q.x - p.x, q.y - p.y)));
+      let dir = Math.atan2(p.y - this.CY, p.x - this.CX);
+      // 团就在正中间时方向没有意义，直接往右上放
+      if (far < 4 || Math.hypot(p.x - this.CX, p.y - this.CY) < 30) dir = -Math.PI / 3;
+      const text = `${g.name} · ${g.cards.length}`;
+      const w = ctx.measureText(text).width;
+
+      let lx = p.x + Math.cos(dir) * (far + 20);
+      let ly = p.y + Math.sin(dir) * (far + 18);
+      lx = clampNum(lx, 20 + w / 2, this.w - 20 - w / 2);
+      ly = clampNum(ly, 74, this.h - 46);
+
+      const box = { x: lx - w / 2 - 5, y: ly - 10, w: w + 10, h: 20 };
+      for (let pass = 0; pass < 16; pass += 1) {
+        const hit = placed.find(
+          (b) => box.x < b.x + b.w && box.x + box.w > b.x && box.y < b.y + b.h && box.y + box.h > b.y,
+        );
+        if (!hit) break;
+        box.y += 18;
+        if (box.y > this.h - 40) box.y = 66;
       }
-      ctx.textAlign = l.align;
-      ctx.font = '600 13px -apple-system, "PingFang SC", sans-serif';
+      placed.push(box);
+      ly = box.y + 10;
+
+      ctx.fillStyle = 'rgba(4,7,14,0.6)';
+      roundRect(ctx, box.x, box.y, box.w, box.h, 6);
+      ctx.fill();
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = 0.96;
       ctx.fillStyle = g.color;
       ctx.shadowColor = g.color;
-      ctx.shadowBlur = 18;
-      ctx.fillText(l.text, l.x, l.y);
+      ctx.shadowBlur = 12;
+      ctx.fillText(text, lx, ly);
       ctx.shadowBlur = 0;
-    }
-
-    // 悬停时把那句记忆念出来
-    if (hov) {
-      const text = hov.card.text.length > 26 ? `${hov.card.text.slice(0, 26)}…` : hov.card.text;
-      ctx.font = '12px -apple-system, "PingFang SC", sans-serif';
-      const width = ctx.measureText(text).width;
-      const bx = Math.min(this.w - width - 24, Math.max(12, hov.x - width / 2 - 10));
-      const by = Math.max(12, hov.y - 42);
-      ctx.fillStyle = 'rgba(8,12,22,0.86)';
-      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-      ctx.lineWidth = 1;
-      roundRect(ctx, bx, by, width + 20, 26, 8);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(232,240,255,0.95)';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(text, bx + 10, by + 13);
+      ctx.globalAlpha = 1;
     }
   }
 
-  pick(event) {
+  drawTip(hov) {
+    const ctx = this.ctx;
+    const p = this.projected.get(hov.card.id);
+    if (!p) return;
+    const text = hov.card.text.length > 30 ? `${hov.card.text.slice(0, 30)}…` : hov.card.text;
+    ctx.font = '12px -apple-system, "PingFang SC", sans-serif';
+    const w = ctx.measureText(text).width;
+    const bx = clampNum(p.x - w / 2 - 10, 12, this.w - w - 34);
+    const by = clampNum(p.y - 46, 12, this.h - 44);
+    roundRect(ctx, bx, by, w + 20, 26, 8);
+    ctx.fillStyle = 'rgba(6,10,20,0.9)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(140,255,240,0.35)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(232,246,255,0.96)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, bx + 10, by + 13);
+  }
+
+  updateTelemetry() {
+    const box = $('#galaxy-telemetry');
+    if (!box) return;
+    const deg = ((this.yaw * 180) / Math.PI) % 360;
+    box.textContent = `ROT ${((deg < 0 ? deg + 360 : deg) | 0).toString().padStart(3, '0')}° · PITCH ${((this.pitch * 180) / Math.PI).toFixed(0)}° · ZOOM ${this.zoom.toFixed(2)}×`;
+  }
+
+  pick(cx, cy) {
     const box = this.canvas.getBoundingClientRect();
-    const x = event.clientX - box.left;
-    const y = event.clientY - box.top;
+    const x = cx - box.left;
+    const y = cy - box.top;
     let best = null;
     let bestD = Infinity;
     for (const n of this.nodes) {
-      const d = Math.hypot(n.x - x, n.y - y);
-      if (d < Math.max(12, n.r + 7) && d < bestD) {
+      const p = this.projected.get(n.card.id);
+      if (!p) continue;
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d < Math.max(11, n.r * p.k + 6) && d < bestD) {
         best = n;
         bestD = d;
       }
@@ -1531,9 +1653,8 @@ function renderGalaxy() {
   if (signature !== galaxy.signature) {
     galaxy.signature = signature;
     galaxy.setData(list);
-  } else {
-    galaxy.draw();
   }
+  galaxy.start();
   renderGalaxyLegend();
 }
 
@@ -2445,7 +2566,8 @@ function renderHealth() {
 /* ── 视图切换与渲染 ─────────────────────────────────── */
 
 function renderStage() {
-  localStorage.setItem('mcore-view', S.view);
+  localStorage.setItem('mcore-view2', S.view);
+  if (S.view !== 'galaxy') galaxy?.stop();
   for (const v of VIEWS) {
     const el = $(`#view-${v}`);
     if (el) el.hidden = S.view !== v;
@@ -3008,7 +3130,7 @@ el.inspStub.addEventListener('click', () => {
   renderInspector();
 });
 const bootParams = new URLSearchParams(location.search);
-const bootView = bootParams.get('view') ?? localStorage.getItem('mcore-view');
+const bootView = bootParams.get('view') ?? localStorage.getItem('mcore-view2') ?? 'galaxy';
 if (VIEWS.includes(bootView)) S.view = bootView;
 const bootQuery = bootParams.get('q');
 if (bootQuery) {

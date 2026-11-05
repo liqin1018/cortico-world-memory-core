@@ -24,13 +24,13 @@
     </div>
 
     <nav class="tabs" id="tabs" role="tablist" aria-label="视图">
-      <button role="tab" data-view="graph" data-letter="图" class="tab active" title="图谱 (1)"><span>图谱</span></button>
-      <button role="tab" data-view="timeline" data-letter="线" class="tab" title="时间线 (2)"><span>时间线</span></button>
-      <button role="tab" data-view="table" data-letter="表" class="tab" title="列表 (3)"><span>列表</span></button>
-      <button role="tab" data-view="turns" data-letter="文" class="tab" title="对话原文 (4)"><span>原文</span></button>
-      <button role="tab" data-view="docs" data-letter="件" class="tab" title="工作区文件 (5)"><span>文件</span></button>
-      <button role="tab" data-view="health" data-letter="检" class="tab" title="体检 (6)"><span>体检</span></button>
-      <button role="tab" data-view="galaxy" data-letter="星" class="tab" title="星图 (7)"><span>星图</span></button>
+      <button role="tab" data-view="galaxy" data-letter="星" class="tab active" title="星图 (1)"><span>星图</span></button>
+      <button role="tab" data-view="graph" data-letter="图" class="tab" title="图谱 (2)"><span>图谱</span></button>
+      <button role="tab" data-view="timeline" data-letter="线" class="tab" title="时间线 (3)"><span>时间线</span></button>
+      <button role="tab" data-view="table" data-letter="表" class="tab" title="列表 (4)"><span>列表</span></button>
+      <button role="tab" data-view="turns" data-letter="文" class="tab" title="对话原文 (5)"><span>原文</span></button>
+      <button role="tab" data-view="docs" data-letter="件" class="tab" title="工作区文件 (6)"><span>文件</span></button>
+      <button role="tab" data-view="health" data-letter="检" class="tab" title="体检 (7)"><span>体检</span></button>
     </nav>
 
     <div class="top-actions">
@@ -72,11 +72,14 @@
       <div class="view" id="view-galaxy" hidden>
         <div class="galaxy-wrap">
           <canvas id="galaxy"></canvas>
+          <div class="galaxy-scan"></div>
           <div class="galaxy-hud">
             <b>记忆星图</b>
             <span>亮度 = 最近被想起　大小 = 权重　光团 = 主题</span>
           </div>
+          <div class="galaxy-telemetry" id="galaxy-telemetry">ROT 000° · PITCH 0° · ZOOM 1.00×</div>
           <div class="galaxy-legend" id="galaxy-legend"></div>
+          <div class="galaxy-hint">拖动旋转 · 滚轮缩放 · 双击复位</div>
           <div class="galaxy-empty" id="galaxy-empty" hidden>还没有记忆，聊几句再回来。</div>
         </div>
       </div>
