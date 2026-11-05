@@ -62,6 +62,9 @@ const ok = (cond: boolean, msg: string) => {
   ok(store.find(first.id)?.text === '她是西安人，不吃香菜。', '3) 同 id 的旧卡没有被覆盖');
   const cat = store.active().find((c) => c.text.includes('年糕'));
   ok(cat?.weight === 0.7 && cat?.source === 'import:backup', '3) 导入的卡保留权重并标记来源');
+  const fromTool = store.importCards([{ kind: 'fact', text: '撤销删除之后来源不该变成 import:backup', source: 'tool' }]);
+  const kept = store.active().find((c) => c.text.includes('撤销删除之后来源不该变'));
+  ok(fromTool.added === 1 && kept?.source === 'tool', '3) 恢复时保留原本的来源');
 }
 
 /* 4) 承诺：到期判定与可选的周期提醒 */

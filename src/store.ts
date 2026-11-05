@@ -586,7 +586,8 @@ export class CardStore {
         tags: Array.isArray(c.tags) ? (c.tags as unknown[]).map((t) => String(t).slice(0, 20)).slice(0, 6) : [],
         createdAt: typeof c.createdAt === 'string' && c.createdAt ? c.createdAt : now,
         updatedAt: typeof c.updatedAt === 'string' && c.updatedAt ? c.updatedAt : now,
-        source: 'import:backup',
+        // 恢复要尽量还原原样：来源、作用域能带就带，别一律改成 import:backup
+        source: typeof c.source === 'string' && c.source ? c.source.slice(0, 40) : 'import:backup',
         origin: 'import',
         uses: Math.max(0, Math.floor(Number(c.uses ?? 0)) || 0),
         lastUsedAt: typeof c.lastUsedAt === 'string' ? c.lastUsedAt : undefined,
