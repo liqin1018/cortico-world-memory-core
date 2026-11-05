@@ -41,6 +41,9 @@ const S = {
   turnsLimit: TURNS_PAGE,
 };
 
+/** 视图清单：加一个视图只要在这里加名字，HTML 里加 tab 和容器。 */
+const VIEWS = ['graph', 'timeline', 'table', 'turns', 'docs', 'health', 'galaxy'];
+
 const el = {
   search: $('#search'),
   searchClear: $('#search-clear'),
@@ -980,6 +983,573 @@ class Graph {
   }
 }
 
+/* ── 记忆星图 ───────────────────────────────────────── */
+
+const GALAXY_KIND = { fact: '事实', self: '自己', episode: '经历', promise: '承诺', note: '临时' };
+const GALAXY_COLOR = { fact: '#8ef0dc', self: '#9ab8ff', episode: '#ffc078', promise: '#ff9ec4', note: '#c3ccd8' };
+
+/** 固定种子：同一批卡片每次画出来的星图一样，截图也稳定。 */
+function seeded(seed) {
+  let s = seed >>> 0 || 1;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+/** 一圈点的平滑闭合路径（凸包外扩之后用）。 */
+function closedPath(pts, pad) {
+  const path = new Path2D();
+  if (pts.length < 3) {
+    const [x, y] = pts[0] ?? [0, 0];
+    path.arc(x, y, 26, 0, Math.PI * 2);
+    return path;
+  }
+  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+  const ex = pts.map(([x, y]) => {
+    const dx = x - cx;
+    const dy = y - cy;
+    const d = Math.hypot(dx, dy) || 1;
+    return [x + (dx / d) * pad, y + (dy / d) * pad];
+  });
+  const n = ex.length;
+  for (let i = 0; i < n; i += 1) {
+    const p0 = ex[(i - 1 + n) % n];
+    const p1 = ex[i];
+    const p2 = ex[(i + 1) % n];
+    const mid = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+    const next = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+    if (i === 0) path.moveTo(mid[0], mid[1]);
+    path.quadraticCurveTo(p1[0], p1[1], next[0], next[1]);
+  }
+  path.closePath();
+  return path;
+}
+
+/** 圆角矩形：不用 ctx.roundRect，老一点的宿主内核没有这个 API。 */
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, h / 2, w / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function hull2d(points) {
+  const p = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length < 3) return p;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  const upper = [];
+  for (let i = p.length - 1; i >= 0; i -= 1) {
+    const q = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+class Galaxy {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.cards = [];
+    this.nodes = [];
+    this.regions = [];
+    this.sprites = new Map();
+    this.hover = null;
+    this.selected = null;
+    this.signature = null;
+    this.w = 0;
+    this.h = 0;
+    this.dpr = 1;
+
+    new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
+    canvas.addEventListener('pointermove', (e) => {
+      const hit = this.pick(e);
+      const id = hit ? hit.card.id : null;
+      if (id === this.hover) return;
+      this.hover = id;
+      canvas.style.cursor = hit ? 'pointer' : 'default';
+      this.draw();
+    });
+    canvas.addEventListener('pointerleave', () => {
+      if (!this.hover) return;
+      this.hover = null;
+      this.draw();
+    });
+    canvas.addEventListener('click', (e) => {
+      const hit = this.pick(e);
+      if (this.onSelect) this.onSelect(hit ? hit.card.id : null);
+    });
+    this.resize();
+  }
+
+  resize() {
+    const box = this.canvas.parentElement.getBoundingClientRect();
+    const w = Math.max(360, Math.round(box.width));
+    const h = Math.max(320, Math.round(box.height));
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.w = w;
+    this.h = h;
+    this.canvas.width = Math.round(w * this.dpr);
+    this.canvas.height = Math.round(h * this.dpr);
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.buildSprites();
+    if (this.cards.length) {
+      this.layout();
+      this.paintBackdrop();
+      this.draw();
+    }
+  }
+
+  setData(cards) {
+    this.cards = cards.slice();
+    this.layout();
+    this.paintBackdrop();
+    this.draw();
+  }
+
+  /** 一团柔光，按类型缓存成小图，画节点时直接贴，省得每帧建渐变。 */
+  buildSprites() {
+    this.sprites.clear();
+    for (const [kind, color] of Object.entries(GALAXY_COLOR)) {
+      const size = 128;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const g = c.getContext('2d');
+      const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+      grad.addColorStop(0, color);
+      grad.addColorStop(0.18, color);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, size, size);
+      this.sprites.set(kind, c);
+    }
+  }
+
+  layout() {
+    const W = this.w;
+    const H = this.h;
+    this.CX = W * 0.5;
+    this.CY = H * 0.52;
+    this.RCORE = Math.min(W, H) * 0.1;
+    this.RMAX = Math.min(W, H) * 0.43;
+    const TILT = 0.9;
+    const GOLD = Math.PI * (3 - Math.sqrt(5));
+    const rnd = seeded(20261105);
+    const gauss = () => (rnd() + rnd() + rnd() - 1.5) / 1.5;
+
+    const tagCount = new Map();
+    for (const c of this.cards) for (const t of c.tags ?? []) tagCount.set(t, (tagCount.get(t) ?? 0) + 1);
+    const groups = new Map();
+    for (const c of this.cards) {
+      const strong = (c.tags ?? []).find((t) => (tagCount.get(t) ?? 0) >= 3);
+      const key = strong || GALAXY_KIND[c.kind] || '其他';
+      if (!groups.has(key)) groups.set(key, { name: key, cards: [] });
+      groups.get(key).cards.push(c);
+    }
+    const regions = [...groups.values()].sort((a, b) => b.cards.length - a.cards.length);
+    const RIN = this.RCORE * 2;
+
+    regions.forEach((g, i) => {
+      const f = (i + 0.5) / regions.length;
+      const rc = RIN + (this.RMAX - RIN) * Math.pow(f, 0.92);
+      const tc = -Math.PI * 0.5 + f * Math.PI * 2 * 1.55 + 0.55 * Math.log(rc / this.RCORE);
+      g.cx = this.CX + Math.cos(tc) * rc;
+      g.cy = this.CY + Math.sin(tc) * rc * TILT;
+      g.br = 24 + Math.sqrt(g.cards.length) * 8.6;
+    });
+
+    // 团与团排斥：别让光带叠在一起
+    for (let iter = 0; iter < 80; iter += 1) {
+      for (let i = 0; i < regions.length; i += 1) {
+        for (let j = i + 1; j < regions.length; j += 1) {
+          const a = regions[i];
+          const b = regions[j];
+          let dx = b.cx - a.cx;
+          let dy = b.cy - a.cy;
+          const d = Math.hypot(dx, dy) || 1;
+          const need = (a.br + b.br) * 1.1;
+          if (d < need) {
+            const push = (need - d) / 2;
+            dx /= d;
+            dy /= d;
+            a.cx -= dx * push;
+            a.cy -= dy * push;
+            b.cx += dx * push;
+            b.cy += dy * push;
+          }
+        }
+      }
+      for (const g of regions) {
+        const dx = g.cx - this.CX;
+        const dy = (g.cy - this.CY) / TILT;
+        const d = Math.hypot(dx, dy) || 1;
+        const lim = this.RMAX * 0.92;
+        if (d > lim) {
+          g.cx = this.CX + (dx / d) * lim;
+          g.cy = this.CY + ((dy / d) * lim) * TILT;
+        }
+      }
+    }
+
+    const now = Date.now();
+    for (const g of regions) {
+      g.nodes = g.cards.map((card, k) => {
+        const u = (k + 0.55) / g.cards.length;
+        const rr = g.br * Math.sqrt(u) * (0.9 + rnd() * 0.2);
+        const aa = k * GOLD + g.name.length * 1.3 + (rnd() - 0.5) * 0.45;
+        const weight = Number(card.weight) || 0.5;
+        const uses = (card.uses ?? 0) + (card.primedCount ?? 0);
+        const last = Date.parse(card.lastUsedAt ?? card.createdAt ?? '') || now;
+        const quiet = Math.max(0, (now - last) / 86_400_000);
+        // 亮度 = 最近被想起；冷层再压一档
+        const bright = (0.35 + 0.65 * Math.exp(-quiet / 45)) * (card.coldAt ? 0.42 : 1);
+        return {
+          card,
+          x: g.cx + Math.cos(aa) * rr,
+          y: g.cy + Math.sin(aa) * rr * 0.92,
+          r: 1.4 + weight * 3.4 + Math.min(2.2, Math.sqrt(uses) * 0.7),
+          bright,
+        };
+      });
+      g.hub = g.nodes.reduce((b, d) => (Number(d.card.weight) > Number(b.card.weight) ? d : b), g.nodes[0]);
+      g.color = GALAXY_COLOR[g.hub.card.kind] ?? '#c3ccd8';
+      g.path = closedPath(hull2d(g.nodes.map((d) => [d.x, d.y])), 18);
+    }
+
+    this.regions = regions;
+    this.nodes = regions.flatMap((g) => g.nodes);
+    this.kindCounts = {};
+    for (const c of this.cards) this.kindCounts[c.kind] = (this.kindCounts[c.kind] ?? 0) + 1;
+    this.placeLabels();
+  }
+
+  placeLabels() {
+    const ctx = this.ctx;
+    const placed = [];
+    for (const g of this.regions) {
+      const t = Math.atan2(g.cy - this.CY, g.cx - this.CX);
+      const far = Math.max(...g.nodes.map((d) => Math.hypot(d.x - g.cx, d.y - g.cy)));
+      let lx = g.cx + Math.cos(t) * (far + 30);
+      let ly = g.cy + Math.sin(t) * (far + 24);
+      lx = Math.max(58, Math.min(this.w - 58, lx));
+      ly = Math.max(62, Math.min(this.h - 42, ly));
+      const align = Math.abs(Math.cos(t)) < 0.25 ? 'center' : Math.cos(t) < 0 ? 'right' : 'left';
+      const text = `${g.name} · ${g.cards.length}`;
+      ctx.font = '600 13px -apple-system, "PingFang SC", sans-serif';
+      const width = ctx.measureText(text).width;
+      const box = {
+        x: align === 'center' ? lx - width / 2 : align === 'right' ? lx - width : lx,
+        y: ly - 9,
+        w: width,
+        h: 18,
+      };
+      for (let pass = 0; pass < 30; pass += 1) {
+        const hit = placed.find(
+          (b) => box.x < b.x + b.w + 10 && box.x + box.w + 10 > b.x && box.y < b.y + b.h + 6 && box.y + box.h + 6 > b.y,
+        );
+        if (!hit) break;
+        box.y += 20;
+        if (box.y > this.h - 40) box.y = 56;
+      }
+      placed.push(box);
+      g.label = {
+        text,
+        x: align === 'center' ? box.x + box.w / 2 : align === 'right' ? box.x + box.w : box.x,
+        y: box.y + 9,
+        align,
+        from: [g.cx + Math.cos(t) * far, g.cy + Math.sin(t) * far],
+      };
+    }
+  }
+
+  paintBackdrop() {
+    const { w: W, h: H, RCORE, RMAX, CX, CY } = this;
+    const c = document.createElement('canvas');
+    c.width = Math.round(W * this.dpr);
+    c.height = Math.round(H * this.dpr);
+    const ctx = c.getContext('2d');
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    const TILT = 0.9;
+    const rnd = seeded(773311);
+    const gauss = () => (rnd() + rnd() + rnd() - 1.5) / 1.5;
+
+    ctx.fillStyle = '#04050c';
+    ctx.fillRect(0, 0, W, H);
+
+    const blob = (x, y, r, rgb, a) => {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(${rgb},${a})`);
+      g.addColorStop(0.5, `rgba(${rgb},${a * 0.4})`);
+      g.addColorStop(1, `rgba(${rgb},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    };
+
+    for (const [rgb, a] of [
+      ['120,80,200', 0.12],
+      ['40,160,170', 0.1],
+      ['190,70,140', 0.08],
+      ['210,160,90', 0.07],
+    ]) {
+      const ang = rnd() * Math.PI * 2;
+      const rr = RMAX * (0.6 + rnd() * 0.45);
+      blob(CX + Math.cos(ang) * rr, CY + Math.sin(ang) * rr * TILT, RMAX * 0.5, rgb, a);
+    }
+
+    // 远景星
+    for (let i = 0; i < 900; i += 1) {
+      const x = rnd() * W;
+      const y = rnd() * H;
+      const dd = Math.hypot(x - CX, (y - CY) / TILT);
+      if (dd < RMAX * 1.05 && rnd() < 0.6) continue;
+      ctx.globalAlpha = 0.12 + rnd() * 0.5;
+      ctx.fillStyle = rnd() > 0.88 ? '#ffe3c4' : '#d6e6ff';
+      const r = 0.25 + Math.pow(rnd(), 3) * 1.4;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // 两条旋臂的尘埃
+    ctx.globalCompositeOperation = 'lighter';
+    blob(CX, CY, RMAX * 1.02, '110,140,210', 0.07);
+    for (let arm = 0; arm < 2; arm += 1) {
+      const base = arm * Math.PI;
+      for (let i = 0; i < 3200; i += 1) {
+        const s = Math.pow(rnd(), 0.78);
+        const r = RCORE * 0.4 + s * RMAX * 1.06;
+        const t = base + 2.05 * Math.PI * s + gauss() * 0.075;
+        const rr = r + gauss() * RMAX * 0.045;
+        const x = CX + Math.cos(t) * rr;
+        const y = CY + Math.sin(t) * rr * TILT;
+        const a = (0.06 + rnd() * 0.16) * (1 - s * 0.3);
+        ctx.fillStyle =
+          s < 0.28 ? `rgba(255,238,205,${a})` : arm === 0 ? `rgba(150,225,255,${a})` : `rgba(195,170,255,${a})`;
+        ctx.beginPath();
+        ctx.arc(x, y, 0.5 + Math.pow(rnd(), 2) * 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    blob(CX, CY, RCORE * 1.9, '255,240,205', 0.5);
+    blob(CX, CY, RCORE * 0.85, '255,251,236', 0.95);
+    blob(CX, CY, RCORE * 0.34, '255,255,252', 1);
+    for (let i = 0; i < 70; i += 1) {
+      const a = rnd() * Math.PI * 2;
+      const r = Math.pow(rnd(), 1.6) * RCORE * 0.7;
+      ctx.globalAlpha = 0.3 + rnd() * 0.6;
+      ctx.fillStyle = '#fff8e4';
+      ctx.beginPath();
+      ctx.arc(CX + Math.cos(a) * r, CY + Math.sin(a) * r * TILT, 0.4 + rnd() * 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    this.bg = c;
+  }
+
+  draw() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    ctx.clearRect(0, 0, this.w, this.h);
+    if (this.bg) ctx.drawImage(this.bg, 0, 0, this.w, this.h);
+    if (!this.nodes.length) return;
+
+    // 分区：很淡的填充 + 发光描边
+    for (const g of this.regions) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = g.color;
+      ctx.globalAlpha = 0.055;
+      ctx.fill(g.path);
+      ctx.restore();
+      ctx.save();
+      ctx.strokeStyle = g.color;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 1;
+      ctx.shadowColor = g.color;
+      ctx.shadowBlur = 16;
+      ctx.stroke(g.path);
+      ctx.restore();
+    }
+
+    // 星座连线：每个团连最近的两颗
+    ctx.lineWidth = 0.65;
+    for (const g of this.regions) {
+      ctx.strokeStyle = g.color;
+      ctx.globalAlpha = 0.34;
+      for (let i = 0; i < g.nodes.length; i += 1) {
+        const a = g.nodes[i];
+        const near = g.nodes
+          .map((b, j) => ({ b, d: Math.hypot(b.x - a.x, b.y - a.y), j }))
+          .filter((o) => o.j !== i)
+          .sort((x, y) => x.d - y.d)
+          .slice(0, 2);
+        for (const { b, d } of near) {
+          if (d > g.br * 2.4) continue;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // 星点
+    ctx.globalCompositeOperation = 'lighter';
+    for (const n of this.nodes) {
+      const sprite = this.sprites.get(n.card.kind) ?? this.sprites.get('note');
+      const size = n.r * 8;
+      ctx.globalAlpha = 0.55 * n.bright;
+      ctx.drawImage(sprite, n.x - size, n.y - size, size * 2, size * 2);
+      ctx.globalAlpha = n.bright;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+      if (n.r > 4.1) {
+        ctx.globalAlpha = 0.3 * n.bright;
+        ctx.strokeStyle = GALAXY_COLOR[n.card.kind] ?? '#c3ccd8';
+        ctx.lineWidth = 0.7;
+        ctx.beginPath();
+        ctx.moveTo(n.x - n.r * 3.6, n.y);
+        ctx.lineTo(n.x + n.r * 3.6, n.y);
+        ctx.moveTo(n.x, n.y - n.r * 3.6);
+        ctx.lineTo(n.x, n.y + n.r * 3.6);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // 选中 / 悬停
+    const mark = (n, color, alpha) => {
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r + 7, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    };
+    const sel = this.nodes.find((n) => n.card.id === this.selected);
+    if (sel) mark(sel, '#ffffff', 0.75);
+    const hov = this.nodes.find((n) => n.card.id === this.hover);
+    if (hov && hov !== sel) mark(hov, '#ffffff', 0.5);
+
+    // 分区标签
+    ctx.textBaseline = 'middle';
+    for (const g of this.regions) {
+      const l = g.label;
+      if (!l) continue;
+      const gap = Math.hypot(l.x - g.cx, l.y - g.cy);
+      const far = Math.max(...g.nodes.map((d) => Math.hypot(d.x - g.cx, d.y - g.cy)));
+      if (gap > far + 34) {
+        ctx.strokeStyle = g.color;
+        ctx.globalAlpha = 0.28;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(l.from[0], l.from[1]);
+        ctx.lineTo(l.x - (l.align === 'left' ? 12 : -12), l.y - 8);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      ctx.textAlign = l.align;
+      ctx.font = '600 13px -apple-system, "PingFang SC", sans-serif';
+      ctx.fillStyle = g.color;
+      ctx.shadowColor = g.color;
+      ctx.shadowBlur = 18;
+      ctx.fillText(l.text, l.x, l.y);
+      ctx.shadowBlur = 0;
+    }
+
+    // 悬停时把那句记忆念出来
+    if (hov) {
+      const text = hov.card.text.length > 26 ? `${hov.card.text.slice(0, 26)}…` : hov.card.text;
+      ctx.font = '12px -apple-system, "PingFang SC", sans-serif';
+      const width = ctx.measureText(text).width;
+      const bx = Math.min(this.w - width - 24, Math.max(12, hov.x - width / 2 - 10));
+      const by = Math.max(12, hov.y - 42);
+      ctx.fillStyle = 'rgba(8,12,22,0.86)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+      ctx.lineWidth = 1;
+      roundRect(ctx, bx, by, width + 20, 26, 8);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(232,240,255,0.95)';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, bx + 10, by + 13);
+    }
+  }
+
+  pick(event) {
+    const box = this.canvas.getBoundingClientRect();
+    const x = event.clientX - box.left;
+    const y = event.clientY - box.top;
+    let best = null;
+    let bestD = Infinity;
+    for (const n of this.nodes) {
+      const d = Math.hypot(n.x - x, n.y - y);
+      if (d < Math.max(12, n.r + 7) && d < bestD) {
+        best = n;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+}
+
+let galaxy = null;
+
+function renderGalaxy() {
+  const canvas = $('#galaxy');
+  if (!canvas) return;
+  if (!galaxy) galaxy = new Galaxy(canvas);
+  galaxy.onSelect = (id) => selectCard(id);
+  galaxy.selected = S.selected;
+  const list = filtered();
+  $('#galaxy-empty').hidden = list.length > 0;
+  const signature = list.map((c) => c.id).join(',');
+  if (signature !== galaxy.signature) {
+    galaxy.signature = signature;
+    galaxy.setData(list);
+  } else {
+    galaxy.draw();
+  }
+  renderGalaxyLegend();
+}
+
+function renderGalaxyLegend() {
+  const host = $('#galaxy-legend');
+  if (!host || !galaxy) return;
+  const counts = galaxy.kindCounts ?? {};
+  host.innerHTML = Object.keys(GALAXY_KIND)
+    .filter((k) => counts[k])
+    .map(
+      (k) =>
+        `<span style="color:${GALAXY_COLOR[k]}"><i style="background:${GALAXY_COLOR[k]}"></i>${GALAXY_KIND[k]} ${counts[k]}</span>`,
+    )
+    .join('');
+}
+
 let graph = null;
 
 function renderGraph() {
@@ -1876,18 +2446,17 @@ function renderHealth() {
 
 function renderStage() {
   localStorage.setItem('mcore-view', S.view);
-  $('#view-graph').hidden = S.view !== 'graph';
-  $('#view-timeline').hidden = S.view !== 'timeline';
-  $('#view-table').hidden = S.view !== 'table';
-  $('#view-turns').hidden = S.view !== 'turns';
-  $('#view-docs').hidden = S.view !== 'docs';
-  $('#view-health').hidden = S.view !== 'health';
+  for (const v of VIEWS) {
+    const el = $(`#view-${v}`);
+    if (el) el.hidden = S.view !== v;
+  }
   document.querySelectorAll('#tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.view === S.view));
 
   if (S.view === 'graph') renderGraph();
   if (S.view === 'timeline') renderTimeline();
   if (S.view === 'table') renderTable();
   if (S.view === 'turns') renderTurns();
+  if (S.view === 'galaxy') renderGalaxy();
   if (S.view === 'docs') {
     renderDocs();
     ensureDocs();
@@ -1991,8 +2560,8 @@ document.addEventListener('keydown', (event) => {
     if (!S.inspCollapsed) renderInspector();
     return;
   }
-  if (['1', '2', '3', '4', '5', '6'].includes(event.key)) {
-    const views = ['graph', 'timeline', 'table', 'turns', 'docs', 'health'];
+  if (VIEWS.map((_, i) => String(i + 1)).includes(event.key)) {
+    const views = VIEWS;
     S.view = views[Number(event.key) - 1];
     return render();
   }
@@ -2440,7 +3009,7 @@ el.inspStub.addEventListener('click', () => {
 });
 const bootParams = new URLSearchParams(location.search);
 const bootView = bootParams.get('view') ?? localStorage.getItem('mcore-view');
-if (['graph', 'timeline', 'table', 'turns', 'docs', 'health'].includes(bootView)) S.view = bootView;
+if (VIEWS.includes(bootView)) S.view = bootView;
 const bootQuery = bootParams.get('q');
 if (bootQuery) {
   S.query = bootQuery;

@@ -740,3 +740,33 @@ kbd {
   background: color-mix(in srgb, var(--warn) 16%, transparent);
   color: var(--ink);
 }
+
+/* ── 记忆星图 ───────────────────────────────────────── */
+#view-galaxy { padding: 12px; box-sizing: border-box; }
+.galaxy-wrap {
+  position: relative; height: 100%; border-radius: 14px; overflow: hidden;
+  background: #04050c;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent), 0 10px 30px rgba(0,0,0,.28);
+}
+#galaxy { display: block; width: 100%; height: 100%; }
+.galaxy-hud {
+  position: absolute; left: 20px; top: 16px;
+  display: flex; flex-direction: column; gap: 5px;
+  color: #e6edf7; pointer-events: none;
+}
+.galaxy-hud b { font-size: 15px; font-weight: 600; letter-spacing: .08em; }
+.galaxy-hud span { font-size: 10.5px; color: #7d8ba6; }
+.galaxy-legend {
+  position: absolute; left: 20px; bottom: 16px;
+  display: flex; gap: 14px; font-size: 10.5px;
+  pointer-events: none;
+}
+.galaxy-legend i {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  margin-right: 5px; vertical-align: 1px; box-shadow: 0 0 8px currentColor;
+}
+.galaxy-empty {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: #7d8ba6; font-size: 12.5px;
+}
+.galaxy-empty[hidden] { display: none; }

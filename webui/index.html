@@ -30,6 +30,7 @@
       <button role="tab" data-view="turns" data-letter="文" class="tab" title="对话原文 (4)"><span>原文</span></button>
       <button role="tab" data-view="docs" data-letter="件" class="tab" title="工作区文件 (5)"><span>文件</span></button>
       <button role="tab" data-view="health" data-letter="检" class="tab" title="体检 (6)"><span>体检</span></button>
+      <button role="tab" data-view="galaxy" data-letter="星" class="tab" title="星图 (7)"><span>星图</span></button>
     </nav>
 
     <div class="top-actions">
@@ -68,6 +69,17 @@
       <div class="view" id="view-turns" hidden></div>
       <div class="view" id="view-docs" hidden></div>
       <div class="view" id="view-health" hidden></div>
+      <div class="view" id="view-galaxy" hidden>
+        <div class="galaxy-wrap">
+          <canvas id="galaxy"></canvas>
+          <div class="galaxy-hud">
+            <b>记忆星图</b>
+            <span>亮度 = 最近被想起　大小 = 权重　光团 = 主题</span>
+          </div>
+          <div class="galaxy-legend" id="galaxy-legend"></div>
+          <div class="galaxy-empty" id="galaxy-empty" hidden>还没有记忆，聊几句再回来。</div>
+        </div>
+      </div>
     </section>
     <aside class="inspector" id="inspector" aria-label="详情">
       <button class="insp-stub" id="insp-stub" title="展开右栏 (I)" aria-label="展开右栏">
