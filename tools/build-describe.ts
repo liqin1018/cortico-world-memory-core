@@ -9,7 +9,8 @@ import { MEMORY_CORE_WORLD } from '../src/definition.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const describe = MEMORY_CORE_WORLD.describe ?? {};
-const envPrompt = readFileSync(join(root, 'ENV_PROMPT.md'), 'utf8').trim();
+// 统一成 LF：Windows 检出是 CRLF，带进 describe.json 会白花 14 个字符的 token
+const envPrompt = readFileSync(join(root, 'ENV_PROMPT.md'), 'utf8').replace(/\r\n/g, '\n').trim();
 
 const out = {
   tools: describe.tools ?? [],

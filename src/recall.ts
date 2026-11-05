@@ -20,7 +20,7 @@ const PRIME_STOP = new Set(
 );
 
 /** 预激活只认「实词」：含有虚词的二元组（不是/不能/来了/的号）一律不算线索。 */
-function isContentToken(token: string): boolean {
+export function isContentToken(token: string): boolean {
   if (token.length < 2) return false;
   if (PRIME_STOP.has(token)) return false;
   for (const ch of token) if (STOP.has(ch)) return false;
@@ -152,10 +152,21 @@ export function rankCardsScored(cards: readonly Card[], opts: RankOptions): Scor
       if (n > cap) common.add(token);
     }
   }
+  // 标签也过一遍 IDF：出现在三成以上卡里的标签（「日常」「工作」）不该算命中
+  const commonTag = new Set<string>();
+  {
+    const cap = Math.max(3, Math.ceil(pool.length * 0.3));
+    const df = new Map<string, number>();
+    for (const c of pool) for (const t of c.tags ?? []) df.set(t, (df.get(t) ?? 0) + 1);
+    for (const [tag, n] of df) if (n > cap) commonTag.add(tag);
+  }
+
   const scored = pool.map((card) => {
     const lexical = overlap(queryTokens, card.text);
-    // 标签单独算一次：对方说「生日」时，打了 #生日 的卡要比正文里顺嘴提到的排得靠前
-    const tagHit = card.tags.length ? overlap(queryTokens, card.tags.join(' ')) : 0;
+    // 标签单独算一次：对方说「生日」时，打了 #生日 的卡要比正文里顺嘴提到的排得靠前。
+    // 但泛标签会把所有卡都拉高，所以先剔掉「到处都是」的那些。
+    const weakTags = card.tags.filter((t) => !commonTag.has(t));
+    const tagHit = weakTags.length ? overlap(queryTokens, weakTags.join(' ')) : 0;
     // 同一张卡被反复召回只做有限的边际压制（封顶 8 次），别让常用的重要记忆越用越沉
     const used = Math.min(card.uses || 0, 8) * 0.03;
     // 最近被想起过的卡给一点小加成：三个月没动过的旧卡不该把上周刚聊过的挤下去。

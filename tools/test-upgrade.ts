@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CardStore, RawLog } from '../src/store.ts';
-import { rankCards, rankRaw } from '../src/recall.ts';
+import { rankCards, rankCardsScored, rankRaw } from '../src/recall.ts';
 import { MemoryCoreWorld } from '../src/world.ts';
 import { MEMORY_CORE_DEFAULTS } from '../src/config.ts';
 import { TOOL_SPECS } from '../src/tools.ts';
@@ -333,16 +333,18 @@ const ok = (cond: boolean, msg: string) => {
   const dir = mkdtempSync(join(tmpdir(), 'mcore-cold-'));
   const store = new CardStore(dir);
   const old = new Date(Date.now() - 200 * 86_400_000).toISOString();
-  const plain = store.add({ kind: 'fact', text: '两百天前的一条低权重记忆', weight: 0.4, createdAt: old }).card;
-  const heavy = store.add({ kind: 'fact', text: '两百天前但权重很高的一条', weight: 0.9, createdAt: old }).card;
+  const plain = store.add({ kind: 'episode', text: '两百天前的一条低权重记忆', weight: 0.4, createdAt: old }).card;
+  const heavy = store.add({ kind: 'episode', text: '两百天前但权重很高的一条', weight: 0.9, createdAt: old }).card;
   const prom = store.add({ kind: 'promise', text: '两百天前没做完的承诺', weight: 0.4, createdAt: old, dueAt: '2026-01-01T10:00' }).card;
   const fresh = store.add({ kind: 'fact', text: '昨天刚记的一条', weight: 0.4 }).card;
 
   const eligible = store.chillEligible(180).map((c) => c.id);
-  ok(eligible.includes(plain.id), '13) 久 + 低权重 → 进候选');
+  ok(eligible.includes(plain.id), '13) 久的低权重经历 → 进候选');
   ok(!eligible.includes(heavy.id), '13) 高权重不沉');
   ok(!eligible.includes(prom.id), '13) 没做完的承诺不沉');
   ok(!eligible.includes(fresh.id), '13) 新的不沉');
+  const factOld = store.add({ kind: 'fact', text: '两百天前的一条低权重事实', weight: 0.4, createdAt: old }).card;
+  ok(!store.chillEligible(180).some((c) => c.id === factOld.id), '13) 低权重的事实也不沉（只沉流水账）');
 
   ok(store.chill([plain.id]) === 1, '13) 能沉到冷层');
   ok(!store.recallable().some((c) => c.id === plain.id), '13) 冷层不进 recallable');
@@ -459,7 +461,8 @@ const ok = (cond: boolean, msg: string) => {
 
   // 常驻成本守门：改 schema 时别不知不觉又胖回去
   const schemaChars = TOOL_SPECS.reduce((n, t) => n + JSON.stringify(t).length, 0);
-  const promptChars = readFileSync(join(root, 'ENV_PROMPT.md'), 'utf8').trim().length;
+  // 统一换行再数：Windows 检出是 CRLF，会多算一倍换行
+  const promptChars = readFileSync(join(root, 'ENV_PROMPT.md'), 'utf8').replace(/\r\n/g, '\n').trim().length;
   ok(schemaChars <= 2600, `16) schema ≤ 2600 字符（现在 ${schemaChars}）`);
   ok(promptChars <= 480, `16) 提示词 ≤ 480 字（现在 ${promptChars}）`);
 }
@@ -488,6 +491,81 @@ const ok = (cond: boolean, msg: string) => {
   ok(iStrong >= 0 && iCilantro > iStrong, '17) 真命中的卡归到「对得上」');
   ok(iWeak >= 0 && iUnrelated > iWeak, '17) 只靠权重浮上来的卡归到「可能沾边」');
   ok(iCilantro < iWeak, '17) 两档顺序：先对得上，后沾边');
+  await world.stop();
+}
+
+/* 18) 泛标签不算命中：出现在三成以上卡里的标签要被剔除 */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-tagidf-'));
+  const store = new CardStore(dir);
+  for (let i = 0; i < 5; i += 1) store.add({ kind: 'fact', text: `第 ${i} 条内容互不相干的记忆`, tags: ['日常'], weight: 0.5 });
+  store.add({ kind: 'fact', text: '一条讲发帖节奏的记忆', tags: ['小黑盒'], weight: 0.5 });
+
+  const scored = rankCardsScored(store.active(), { query: '日常', limit: 5 });
+  const tagged = scored.find((x) => x.card.tags.includes('日常'));
+  ok(!tagged || tagged.tagHit === 0, '18) 「日常」这种泛标签不参与 tagHit');
+
+  const rare = rankCardsScored(store.active(), { query: '小黑盒', limit: 5 });
+  const hit = rare.find((x) => x.card.tags.includes('小黑盒'));
+  ok(Boolean(hit) && hit.tagHit > 0 && hit.tier === 'strong', '18) 罕见标签仍然能顶上来');
+}
+
+/* 19) 同一话题堆到 4 条以上，写的时候要提醒 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-pile-'));
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const write = world.tools().find((t) => t.name === 'mcore_write')!;
+
+  const lines = [
+    '今天小黑盒发了一篇讲旅行的帖',
+    '中午又在小黑盒补了一条评论',
+    '傍晚小黑盒那篇被推了首页',
+    '晚上在小黑盒回复了三条留言',
+  ];
+  let last = '';
+  for (const text of lines) last = String(await write.handler({ kind: 'episode', text, weight: 0.4 }));
+  ok(!last.includes('这个话题已经有'), '19) 第 4 条时还没到阈值');
+
+  last = String(await write.handler({ kind: 'episode', text: '睡前又刷了一遍小黑盒的数据', weight: 0.4 }));
+  ok(last.includes('这个话题已经有 4 条'), '19) 第 5 条触发堆积提醒');
+  ok(last.includes('写成 fact'), '19) 提醒里给了「改成 fact」的出口');
+
+  const fact = String(await write.handler({ kind: 'fact', text: '小黑盒每天发一篇，不用问', weight: 0.7 }));
+  ok(!fact.includes('这个话题已经有'), '19) fact 不触发堆积提醒（只有 episode 才提醒）');
+  await world.stop();
+}
+
+/* 20) 冷层配额：一次最多 4 条，沉到 25% 就停 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-quota-'));
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true, chillAfterDays: 30 },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const store = (world as unknown as { store: CardStore }).store;
+  const old = new Date(Date.now() - 60 * 86_400_000).toISOString();
+  for (let i = 0; i < 40; i += 1) {
+    store.add({ kind: 'episode', text: `很久以前的第 ${i} 条流水账`, weight: 0.4, createdAt: old });
+  }
+  const internals = world as unknown as { maybeChill(d: Date): void; state: { lastChillDay?: string } };
+  const run = () => {
+    internals.state.lastChillDay = undefined;
+    internals.maybeChill(new Date());
+    return store.cold().length;
+  };
+  ok(run() === 4, '20) 第一次沉 4 条（配额）');
+  ok(run() === 8, '20) 第二次再沉 4 条');
+  ok(run() === 10, '20) 第三次只补到 25% 地板（10）');
+  ok(run() === 10, '20) 到地板后不再沉');
   await world.stop();
 }
 

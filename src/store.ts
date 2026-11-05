@@ -241,7 +241,7 @@ export class CardStore {
    * 该冷的卡：好久没被碰过（工具召回和预激活都算）、权重不高、不是没做完的承诺。
    * 只是候选，真正下沉要显式调用 chill()——分层必须是可逆的、看得见的。
    */
-  chillEligible(days = 180, now = Date.now()): Card[] {
+  chillEligible(days = 30, now = Date.now()): Card[] {
     const span = Math.max(0, Number(days) || 0);
     if (!span) return [];
     const cutoff = now - span * 86_400_000;
@@ -251,13 +251,16 @@ export class CardStore {
         Date.parse(c.lastUsedAt ?? '') || 0,
         Date.parse(c.lastPrimedAt ?? '') || 0,
       );
-    return this.active().filter((c) => {
-      if (c.coldAt) return false;
-      if (c.kind === 'promise' && !c.done) return false;
-      if (c.weight > 0.5) return false;
-      if ((c.uses || 0) + (c.primedCount || 0) > 1) return false;
-      return lastTouch(c) < cutoff;
-    });
+    return this.active()
+      .filter((c) => {
+        if (c.coldAt) return false;
+        // 只沉流水账和临时信息；fact / self / 未完成的承诺是「人」，不能沉
+        if (c.kind !== 'episode' && c.kind !== 'note') return false;
+        if (c.weight > 0.45) return false;
+        if ((c.uses || 0) + (c.primedCount || 0) > 1) return false;
+        return lastTouch(c) < cutoff;
+      })
+      .sort((a, b) => lastTouch(a) - lastTouch(b)); // 最久没碰的排前面，配额先吃它们
   }
 
   chill(ids: readonly string[]): number {

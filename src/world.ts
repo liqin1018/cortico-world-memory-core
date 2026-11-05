@@ -29,7 +29,7 @@ import {
   type RawEntry,
 } from './store.ts';
 import { importLegacy } from './importer.ts';
-import { rankCards, rankCardsScored, rankRaw } from './recall.ts';
+import { isContentToken, rankCardsScored, rankRaw, tokenize } from './recall.ts';
 import { advance, createInitialState, moodLabel } from './state.ts';
 import { formatLocal, hmToMinutes, humanSpan, inWindow, localParts } from './time.ts';
 import { MemorySite, type HealthReport, type ImportReport, type Snapshot } from './site.ts';
@@ -773,7 +773,51 @@ export class MemoryCoreWorld implements World {
         extra = '，但要关的记录没找到';
       }
     }
-    return `已记下（${kind}${res.merged ? '，与已有记录合并' : ''}）${extra}。共 ${this.store.stats().total} 条。`;
+    // 同一话题堆了太多条时提醒一句。文本相似度靠不住——「每天发一条小黑盒」
+    // 换个说法 Jaccard 就掉到 0.2，所以改用「实词是不是反复出现在别的卡里」来判。
+    let pile = '';
+    if (kind === 'episode' && !res.merged) {
+      const top = this.topicPile(text);
+      if (top) {
+        pile = `\n（提醒：「${top.word}」这个话题已经有 ${top.count} 条了。同一次事别再记一遍——真要合并就写一条新的、用 closes 把旧的收起来；如果它其实是条长期规矩，写成 fact。）`;
+      }
+    }
+    return `已记下（${kind}${res.merged ? '，与已有记录合并' : ''}）${extra}。共 ${this.store.stats().total} 条。${pile}`;
+  }
+
+  /**
+   * 这段话里某个实词在库里出现过几次（不含刚写进来的这条）。
+   * 分词只有二元组，所以「小黑」这类会先扩成「小黑盒」再数——不然提示里出现半个词很蠢。
+   */
+  private topicPile(text: string, min = 4): { word: string; count: number } | null {
+    const tokens = [...new Set(tokenize(text).filter(isContentToken))];
+    if (!tokens.length) return null;
+    const live = this.store.active();
+    const countOf = (word: string) => live.reduce((n, c) => n + (c.text.includes(word) ? 1 : 0), 0) - 1;
+
+    let best: { word: string; count: number } | null = null;
+    for (const token of tokens) {
+      const at = text.indexOf(token);
+      const cands = new Set<string>([token]);
+      if (at >= 0) {
+        const right = at + token.length < text.length ? text[at + token.length] : '';
+        const left = at > 0 ? text[at - 1] : '';
+        if (right) cands.add(token + right);
+        if (left) cands.add(left + token);
+        if (left && right) cands.add(left + token + right);
+      }
+      let hit: { word: string; count: number } | null = null;
+      for (const word of cands) {
+        const count = countOf(word);
+        if (count < min) continue;
+        // 同样够格的，取最长的那个（「小黑盒」比「小黑」说得清楚）
+        if (!hit || word.length > hit.word.length || (word.length === hit.word.length && count > hit.count)) {
+          hit = { word, count };
+        }
+      }
+      if (hit && (!best || hit.count > best.count)) best = hit;
+    }
+    return best;
   }
 
   private findCard(prefix: string): { id: string; kind: string } | undefined {
@@ -1213,19 +1257,24 @@ export class MemoryCoreWorld implements World {
     const key = turn.cursor >= 0 ? `c${turn.cursor}` : `t${turn.at}`;
     if (this.primedFor === key) return;
 
-    const picked = rankCards(this.store.recallable(), {
+    // 软加权，不硬过滤：库里大头是 episode，砍掉就没什么可推的了
+    const kindBias: Record<string, number> = { fact: 1.25, promise: 1.3, self: 1.15, note: 0.9, episode: 0.8 };
+    const picked = rankCardsScored(this.store.recallable(), {
       // 太长的消息会把线索稀释掉，只取开头一段当查询
       query: turn.text.slice(0, 200),
-      limit: 8,
+      limit: 12,
       useAging: cfg.recallUseAging !== false,
       requireHit: true,
       minBigrams: 1,
     })
-      .filter((c) => {
-        const last = Date.parse(c.lastPrimedAt ?? '');
+      .map((x) => ({ card: x.card, adj: x.score * (kindBias[x.card.kind] ?? 1) }))
+      .sort((a, b) => b.adj - a.adj)
+      .filter((x) => {
+        const last = Date.parse(x.card.lastPrimedAt ?? '');
         return !Number.isFinite(last) || now.getTime() - last > PRIME_COOLDOWN_MS;
       })
-      .slice(0, lines);
+      .slice(0, lines)
+      .map((x) => x.card);
     if (!picked.length) return;
 
     const tz = this.tz();
@@ -1378,14 +1427,29 @@ export class MemoryCoreWorld implements World {
     this.save(true);
   }
 
-  /** 每天判一次冷层：只标记，不删除。 */
+  /**
+   * 每天判一次冷层：只标记，不删除。
+   * 按「配额」沉而不是按绝对门槛一把沉——库才几十条的时候，一次全沉会让星图直接变黑。
+   */
   private maybeChill(now: Date): void {
     const days = this.chillDays();
     if (!days) return;
     const today = formatLocal(now, this.tz()).slice(0, 10);
     if (this.state.lastChillDay === today) return;
     this.state.lastChillDay = today;
-    const ids = this.store.chillEligible(days, now.getTime()).map((c) => c.id);
+
+    const live = this.store.active().length;
+    const floor = Math.floor(live * 0.25);
+    const cold = this.store.cold().length;
+    if (cold >= floor) {
+      this.save();
+      return;
+    }
+    const room = Math.min(4, floor - cold);
+    const ids = this.store
+      .chillEligible(days, now.getTime())
+      .slice(0, room)
+      .map((c) => c.id);
     if (ids.length) this.store.chill(ids);
     this.save();
   }
