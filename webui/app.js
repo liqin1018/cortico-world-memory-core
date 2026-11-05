@@ -1738,8 +1738,8 @@ function renderHealth() {
   host.innerHTML = `<div class="health-wrap">
     <div class="h-grid">
       ${healthCard('在用记忆', h.cards.active, `另有 ${h.cards.retired} 条已退休`)}
-      ${healthCard('从没被召回', h.cards.dead, '建了 7 天以上、一次都没被搜到', h.cards.dead > h.cards.active * 0.5 ? 'warn' : '')}
-      ${healthCard('召回次数', h.recall.calls, `${h.recall.cardsTouched} 张卡被用过`)}
+      ${healthCard('从没被想起', h.cards.dead, '建了 7 天以上，一次都没被碰到过', h.cards.dead > h.cards.active * 0.5 ? 'warn' : '')}
+      ${healthCard('召回次数', h.recall.calls, `${h.recall.cardsTouched} 张卡被用过 · 主动想起 ${h.recall.primed ?? 0} 次`)}
       ${healthCard('对话原文', h.raw.lines, `归档 ${h.raw.archivedLines} 行 · ${h.raw.archivedDays} 天`)}
     </div>
 
@@ -1768,7 +1768,7 @@ function renderHealth() {
     </section>
 
     <section class="h-block">
-      <h3>从没被召回的卡 ${h.cards.dead ? `<button class="btn tiny" id="h-retire-dead">全部退休（${h.cards.dead}）</button>` : ''}</h3>
+      <h3>从没被想起的卡 ${h.cards.dead ? `<button class="btn tiny" id="h-retire-dead">全部退休（${h.cards.dead}）</button>` : ''}</h3>
       ${
         dead.length
           ? `<div class="maint-list">${deadRows}</div>${dead.length > 20 ? `<p class="dim">还有 ${dead.length - 20} 条没列出来。</p>` : ''}`
@@ -1784,7 +1784,7 @@ function renderHealth() {
     retireDead.addEventListener('click', async () => {
       const ids = h.deadIds.slice();
       if (!ids.length) return;
-      if (!confirm(`把 ${ids.length} 张从没被召回的卡标成退休？不删除，随时能在回收站恢复。`)) return;
+      if (!confirm(`把 ${ids.length} 张从没被想起的卡标成退休？不删除，随时能在回收站恢复。`)) return;
       try {
         for (const id of ids) await api(`/api/cards/${id}/retire`, { method: 'POST', body: '{}' });
         S.health = null;

@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CardStore, RawLog } from '../src/store.ts';
-import { rankRaw } from '../src/recall.ts';
+import { rankCards, rankRaw } from '../src/recall.ts';
 import { MemoryCoreWorld } from '../src/world.ts';
 import { MEMORY_CORE_DEFAULTS } from '../src/config.ts';
 
@@ -179,6 +179,149 @@ const ok = (cond: boolean, msg: string) => {
   ok(log.remove(3), '8) 归档里的那条也能删');
   ok(log.readArchive(90, 100).every((e) => e.cursor !== 3), '8) 删完归档里也查不到');
   ok(!log.remove(999), '8) 不存在的 cursor 返回 false');
+}
+
+/* 9) 线索必中：requireHit 不许靠体重混进来 */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-hit-'));
+  const store = new CardStore(dir);
+  store.add({ kind: 'fact', text: '完全无关的一条高权重记忆', weight: 1 });
+  store.add({ kind: 'fact', text: '她不吃香菜，点外卖别放', weight: 0.5 });
+  const loose = rankCards(store.active(), { query: '香菜', limit: 5 });
+  const strict = rankCards(store.active(), { query: '香菜', limit: 5, requireHit: true });
+  ok(loose.some((c) => c.text.includes('无关')), '9) 不要求命中时高权重卡会混进来');
+  ok(strict.length === 1 && strict[0].text.includes('香菜'), '9) requireHit 只剩真的被线索命中的那条');
+}
+
+/* 10) 出处标注 + 每轮预激活 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-prime-'));
+  const events: Array<Record<string, unknown>> = [];
+  const pushed: Array<Record<string, any>> = [];
+  const host = {
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    store: { range: ({ origin }: { origin?: string }) => (origin === 'external' ? events : []) },
+    pushEvent: async (e: Record<string, unknown>) => {
+      pushed.push(e as Record<string, any>);
+      return true;
+    },
+  } as never;
+
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true, preactivateLines: 2 },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start(host);
+
+  const internals = world as unknown as {
+    lastUserProbe: number;
+    probeLastUser(now: number): number | null;
+    maybePreactivate(now: Date): Promise<void>;
+  };
+  const write = world.tools().find((t) => t.name === 'mcore_write')!;
+  const recall = world.tools().find((t) => t.name === 'mcore_recall')!;
+
+  // 模拟对方刚说了一句
+  events.push({
+    cursor: 7,
+    ts: new Date().toISOString(),
+    senderKey: 'private:1940008084',
+    text: '晚上点外卖吧，就那家泡馍',
+  });
+  internals.lastUserProbe = 0;
+  internals.probeLastUser(Date.now());
+
+  const w = String(await write.handler({ kind: 'fact', text: '她不吃香菜，点外卖别放香菜', weight: 0.7 }));
+  ok(w.includes('已记下'), '10) 写卡成功');
+
+  const card = (world as unknown as { store: CardStore }).store.active().find((c) => c.text.includes('香菜'));
+  ok(Boolean(card?.src?.ts), '10) 写卡时记下了出处时间');
+  const recalled = String(await recall.handler({ query: '香菜' }));
+  ok(recalled.includes('↩'), '10) 召回输出带 ↩ 出处标记');
+  ok(recalled.includes('改写过的记忆'), '10) 召回首行说明这是改写不是原话');
+
+  // 预激活：应该推一条，并记一次 primed
+  pushed.length = 0;
+  await internals.maybePreactivate(new Date());
+  ok(pushed.length === 1 && pushed[0].type === 'mcore.prime', '10) 每轮预激活推了一条');
+  ok(String(pushed[0]?.text ?? '').includes('香菜'), '10) 推的是被线索命中的那条');
+  ok(String(pushed[0]?.text ?? '').includes('不是对方刚说的'), '10) 内容明确标了不是刚说的');
+  const after = (world as unknown as { store: CardStore }).store.active().find((c) => c.id === card?.id);
+  ok(after?.primedCount === 1, '10) 预激活记了一次 primed，不混进 uses');
+  ok((after?.uses ?? 0) === 1, '10) uses 仍然只算工具召回那一次');
+
+  // 同一句不重复推
+  pushed.length = 0;
+  await internals.maybePreactivate(new Date());
+  ok(pushed.length === 0, '10) 同一句话不重复预激活');
+
+  // 冷却期内换一句也不重复推同一张卡
+  events.push({
+    cursor: 8,
+    ts: new Date().toISOString(),
+    senderKey: 'private:1940008084',
+    text: '香菜真的不能放啊',
+  });
+  internals.lastUserProbe = 0;
+  internals.probeLastUser(Date.now());
+  pushed.length = 0;
+  await internals.maybePreactivate(new Date());
+  ok(pushed.length === 0, '10) 两小时内不重复推同一张卡');
+
+  await world.stop();
+}
+
+/* 11) 关掉预激活就一条都不推 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-primeoff-'));
+  const events: Array<Record<string, unknown>> = [];
+  const pushed: Array<Record<string, unknown>> = [];
+  const host = {
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    store: { range: ({ origin }: { origin?: string }) => (origin === 'external' ? events : []) },
+    pushEvent: async (e: Record<string, unknown>) => {
+      pushed.push(e);
+      return true;
+    },
+  } as never;
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true, preactivateLines: 0 },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start(host);
+  const write = world.tools().find((t) => t.name === 'mcore_write')!;
+  const internals = world as unknown as { lastUserProbe: number; probeLastUser(n: number): number | null; maybePreactivate(d: Date): Promise<void> };
+  await write.handler({ kind: 'fact', text: '她不吃香菜，点外卖别放香菜', weight: 0.7 });
+  events.push({ cursor: 9, ts: new Date().toISOString(), senderKey: 'private:1', text: '晚上点外卖吧' });
+  internals.lastUserProbe = 0;
+  internals.probeLastUser(Date.now());
+  await internals.maybePreactivate(new Date());
+  ok(pushed.length === 0, '11) preactivateLines=0 时完全不推');
+  await world.stop();
+}
+
+/* 12) 单字噪音要被 minBigrams 挡住；缺配置键时回落到默认 2 条 */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-bigram-'));
+  const store = new CardStore(dir);
+  store.add({ kind: 'fact', text: '今天心情不错，适合出门' });
+  const onlyChar = rankCards(store.active(), { query: '今', limit: 5, requireHit: true });
+  const noChar = rankCards(store.active(), { query: '今', limit: 5, requireHit: true, minBigrams: 1 });
+  ok(onlyChar.length === 1, '12) 单字也能命中（requireHit 不管长度）');
+  ok(noChar.length === 0, '12) minBigrams=1 把单字噪音挡掉');
+
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-predef-'));
+  const cfg = { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true } as Record<string, unknown>;
+  delete cfg.preactivateLines;
+  const world = new MemoryCoreWorld({ cfg, dataDir, timezone: 'Asia/Shanghai', botDir: dataDir } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const count = (world as unknown as { preactivateCount(): number }).preactivateCount();
+  ok(count === 2, `12) config 里没有这个键时回落到 2（实际 ${count}）`);
+  await world.stop();
 }
 
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');

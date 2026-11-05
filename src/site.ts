@@ -70,7 +70,7 @@ export interface MaintenanceReport {
 export interface HealthReport {
   generatedAt: string;
   cards: { total: number; active: number; retired: number; dead: number };
-  recall: { calls: number; cardsTouched: number };
+  recall: { calls: number; cardsTouched: number; primed: number };
   perDay: Array<{ day: string; n: number }>;
   promises: { open: number; overdue: number; noDue: number; repeating: number };
   raw: { lines: number; archivedDays: number; archivedLines: number };

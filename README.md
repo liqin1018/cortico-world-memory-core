@@ -30,7 +30,7 @@ pnpm add cortico-world-memory-core
 | 工具 | 作用 |
 |---|---|
 | `mcore_write` | 写一条记忆。`kind` 五选一，可带 `weight` / `tags` / `dueAt`；**`promise` 必须带 `dueAt`**，不知道时间会被拒绝并提示先问，确实没有截止时间就写 `dueAt: "none"`；传 `closes` 表示「这条替代了某条旧的」 |
-| `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；`mode=open` 看没做完的承诺和今天的安排；`mode=archive` 翻更早的归档原文 |
+| `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；结果里带 `↩` 的是「改写过的记忆 + 当时那句原话的日期」；`mode=open` 看没做完的承诺和今天的安排；`mode=archive` 翻更早的归档原文 |
 | `mcore_state` | 角色自己的精力 / 心情 / 正在做什么 / 在哪 / 睡没睡 |
 | `mcore_plan` | 今天的日程（增、勾、清空） |
 
@@ -43,6 +43,8 @@ pnpm add cortico-world-memory-core
 - **改内容留版本**：编辑一条记忆不会覆盖，而是生成新版本，旧版标 `retired`、新卡记 `supersedes`，形成可回溯的版本链。
 - **记忆域 `scope`**：默认 `main`，导入的旧数据是 `import`。现在只用于站点筛选，为将来多场景分流留位。
 - **重复合并**：同类型、二元组相似度超过阈值会成组出现在「维护」面板里，先预览再合并；合并会把标签、权重、截止时间并到保留的那条上。
+- **每轮主动想起**：拿对方刚说的那句当线索，自动把 2 条旧记忆推到上下文里（`preactivateLines`，可关）。这是「不靠模型自觉」的那一环——工具召回要模型想起来问，预激活不用。只给一行摘要，细节仍然要它调 `mcore_recall`。
+- **出处**：写卡时记下当时最近的一句原话（`src.ts`），召回时用 `↩11-02` 标出来，并明确说「这是改写过的记忆，不是原话」。卡片永远不是证据本身。
 
 ## 记忆地图（webui/）
 
@@ -97,6 +99,7 @@ pnpm add cortico-world-memory-core
 | `recallLimit` | `5` | 一次召回给几条 |
 | `recallMaxChars` | `600` | 召回结果总字数上限 |
 | `recallUseAging` | `true` | 排序参考「上次被想起的时间」：久不用的旧卡让位；关掉退回只看关键词、标签、权重 |
+| `preactivateLines` | `2` | 每轮按对方刚说的话自动带出几条旧记忆（预激活），不用模型自己去查；`0` = 关，最多 3 条 |
 | `promiseRepeatDays` | `1` | 到期还没做的承诺隔几天再提一次，直到做完或退休；`0` = 只提醒一次 |
 | `proactiveEnabled` | `true` | 主动开口 |
 | `proactiveMinGapMin` / `proactiveDailyCap` | `100` / `3` | 主动间隔与每日上限 |

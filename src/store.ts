@@ -37,6 +37,14 @@ export interface Card {
   supersedes?: string[];
   /** 记忆域：main（自己写的）/ import（旧插件导入的），给以后接 QQ 分流留位。 */
   scope?: string;
+  /**
+   * 写这条时最近的一句原文（游标 + 时间）。卡片是模型改写过的结论，
+   * 不是原话；留一个指针，召回时才敢说「这条能追到当时的哪一句」。
+   */
+  src?: { cursor: number; ts: string };
+  /** 被「主动想起」过几次（每轮预激活），和 uses（工具召回）分开记。 */
+  primedCount?: number;
+  lastPrimedAt?: string;
 }
 
 export interface RawEntry {
@@ -250,6 +258,7 @@ export class CardStore {
     origin?: string;
     createdAt?: string;
     scope?: string;
+    src?: { cursor: number; ts: string };
   }): { card: Card; merged: boolean } {
     const text = String(input.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
     const key = normalizeText(text);
@@ -282,6 +291,7 @@ export class CardStore {
       scope: String(input.scope ?? 'main').slice(0, 24),
       ...(input.dueAt ? { dueAt: input.dueAt } : {}),
       ...(input.kind === 'promise' ? { done: false } : {}),
+      ...(input.src ? { src: input.src } : {}),
     };
     this.cards.push(card);
     this.dirty = true;
@@ -359,6 +369,8 @@ export class CardStore {
       status: 'active',
       uses: old.uses,
       supersedes: [...(old.supersedes ?? []), old.id],
+      // 文本换了，旧的出处就对不上了，别再挂一个会骗人的 ↩
+      src: undefined,
     };
     delete next.retiredAt;
     delete next.retiredBy;
@@ -526,6 +538,23 @@ export class CardStore {
     this.save(true);
   }
 
+  /**
+   * 记「主动想起」的账。和 touch 分开：预激活是系统推的，工具召回是模型要的。
+   * 两者都算「被用过」，但只有后者说明模型真的去查了。
+   */
+  prime(ids: readonly string[]): void {
+    if (!ids.length) return;
+    const now = new Date().toISOString();
+    for (const id of ids) {
+      const card = this.find(id);
+      if (!card) continue;
+      card.primedCount = (card.primedCount || 0) + 1;
+      card.lastPrimedAt = now;
+    }
+    this.dirty = true;
+    this.save();
+  }
+
   openPromises(limit = 5, now = Date.now()): Card[] {
     return this.cards
       .filter((c) => c.kind === 'promise' && !c.done && c.status !== 'retired')
@@ -609,6 +638,13 @@ export class CardStore {
         retiredBy: typeof c.retiredBy === 'string' ? c.retiredBy : undefined,
         supersedes: Array.isArray(c.supersedes) ? (c.supersedes as unknown[]).map((x) => String(x)).slice(0, 20) : undefined,
         scope: typeof c.scope === 'string' && c.scope ? c.scope.slice(0, 20) : 'import',
+        src:
+          c.src && typeof c.src === 'object' && Number.isFinite(Number((c.src as { cursor?: unknown }).cursor))
+            && typeof (c.src as { ts?: unknown }).ts === 'string'
+            ? { cursor: Number((c.src as { cursor: number }).cursor), ts: String((c.src as { ts: string }).ts) }
+            : undefined,
+        primedCount: Number.isFinite(Number(c.primedCount)) ? Number(c.primedCount) : undefined,
+        lastPrimedAt: typeof c.lastPrimedAt === 'string' ? c.lastPrimedAt : undefined,
       };
       this.cards.push(card);
       byId.add(id);

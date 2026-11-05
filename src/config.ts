@@ -47,6 +47,8 @@ export interface MemoryCoreConfig {
   recallMaxChars: number;
   /** 排序时是否参考「上次被想起的时间」：久不用的旧卡不抢新卡的位。 */
   recallUseAging: boolean;
+  /** 每轮主动想起几条（0 = 关）。预激活，不占工具调用。 */
+  preactivateLines: number;
   /** 每隔多少分钟把状态作为一条事件投递一次（0 = 不投递，最省）。 */
   contextEveryMin: number;
   /** 夜间是否唤醒一轮让角色整理记忆（会多一次完整请求）。 */
@@ -96,6 +98,7 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   recallLimit: 5,
   recallMaxChars: 600,
   recallUseAging: true,
+  preactivateLines: 2,
   contextEveryMin: 0,
   nightlyConsolidate: false,
   nightlyHour: 3,
@@ -203,6 +206,7 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
         title: '久不用的记忆让位',
         description: '排序时参考「上次被想起的时间」：长期没被召回、权重又低的卡排到后面。关掉就退回只看关键词、标签和权重。',
       },
+      'worlds.memory-core.preactivateLines': num('每轮主动想起几条', '按对方刚说的话自动带出几条旧记忆，不用模型自己去查。0 = 关。每条约 20 字，默认 2 条。', 0, 3, '条'),
       'worlds.memory-core.contextEveryMin': num('状态投递间隔', '每隔这么多分钟把「我在做什么」推到上下文里。0 = 不推（默认，最省）；推一次约 60 token，但每轮都在历史里。', 0, 240, '分钟'),
       'worlds.memory-core.nightlyConsolidate': {
         type: 'boolean',

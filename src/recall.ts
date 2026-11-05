@@ -8,6 +8,25 @@ const STOP = new Set(
   '的了是在我你他她它和就都也不吗呢啊吧有会要说过这个那个把被给对说着地得然后还又很太吗嘛哦呀'.split(''),
 );
 
+/**
+ * 预激活专用：这些双字词在对话里到处都是，命中它们不代表「说到同一件事」。
+ * 不在这里挡，「今天好累」会把一堆不相干的卡推上来。
+ * 只影响 minBigrams 的计数，不影响普通召回打分。
+ */
+const PRIME_STOP = new Set(
+  ('今天 明天 昨天 后天 晚上 中午 早上 上午 下午 夜里 现在 刚才 刚刚 回来 回去 出来 起来 一下 一点 一起 '
+    + '时候 然后 真的 可以 什么 怎么 觉得 应该 已经 还是 就是 因为 所以 但是 如果 不过 而且 '
+    + '你们 我们 他们 自己 东西 事情 一个 有点 不是 没有 知道 看到 说过 感觉 需要 之前 之后').split(' '),
+);
+
+/** 预激活只认「实词」：含有虚词的二元组（不是/不能/来了/的号）一律不算线索。 */
+function isContentToken(token: string): boolean {
+  if (token.length < 2) return false;
+  if (PRIME_STOP.has(token)) return false;
+  for (const ch of token) if (STOP.has(ch)) return false;
+  return true;
+}
+
 export function tokenize(text: string): string[] {
   const norm = String(text ?? '')
     .toLowerCase()
@@ -61,6 +80,16 @@ export interface RankOptions {
   now?: number;
   /** 是否参考「上次被想起的时间」。关掉就退回只看关键词、标签、权重和新鲜度。 */
   useAging?: boolean;
+  /**
+   * 只保留真的被线索命中的卡（关键词或标签重叠 > 0）。
+   * 每轮预激活必须开这个：否则一张高权重的无关卡会靠 weight 混进「想起来了」。
+   */
+  requireHit?: boolean;
+  /**
+   * 至少命中几个「双字以上」的词。中文单字太容易撞（今/天/好），
+   * 只靠 requireHit 的话「今天好累」能把半库都捞上来。
+   */
+  minBigrams?: number;
 }
 
 export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
@@ -82,6 +111,23 @@ export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
     });
     return pool.slice(0, opts.limit);
   }
+  // 「今天」「回来」这类词到处都是，命中它们不算线索。文档频率只能挡掉极端常见的，
+  // 挡不住「今天」（5/66）这种——所以再加一张停用词表。
+  const common = new Set<string>();
+  if (opts.minBigrams) {
+    const cap = Math.max(3, Math.ceil(pool.length * 0.3));
+    for (const token of new Set(queryTokens)) {
+      if (token.length < 2) continue;
+      let n = 0;
+      for (const c of pool) {
+        if (`${c.text} ${c.tags.join(' ')}`.toLowerCase().includes(token)) {
+          n += 1;
+          if (n > cap) break;
+        }
+      }
+      if (n > cap) common.add(token);
+    }
+  }
   const scored = pool.map((card) => {
     const lexical = overlap(queryTokens, card.text);
     // 标签单独算一次：对方说「生日」时，打了 #生日 的卡要比正文里顺嘴提到的排得靠前
@@ -96,10 +142,19 @@ export function rankCards(cards: readonly Card[], opts: RankOptions): Card[] {
         ? 0.15 * Math.exp(-(now - lastUsed) / (30 * 86_400_000))
         : 0;
     const score = lexical * 2 + tagHit * 1.2 + card.weight * 0.5 + freshness(card.createdAt, now) + glow - used;
-    return { card, score };
+    // 双字以上的命中数：预激活用它挡单字噪音
+    const hay = `${card.text} ${card.tags.join(' ')}`.toLowerCase();
+    let bigrams = 0;
+    for (const token of new Set(queryTokens)) {
+      if (isContentToken(token) && !common.has(token) && hay.includes(token)) bigrams += 1;
+    }
+    return { card, score, hit: lexical > 0 || tagHit > 0, bigrams };
   });
   scored.sort((a, b) => b.score - a.score);
-  return scored.filter((x) => x.score > 0.25).slice(0, opts.limit).map((x) => x.card);
+  return scored
+    .filter((x) => x.score > 0.25 && (!opts.requireHit || x.hit) && (!opts.minBigrams || x.bigrams >= opts.minBigrams))
+    .slice(0, opts.limit)
+    .map((x) => x.card);
 }
 
 export function rankRaw(entries: readonly RawEntry[], query: string, limit: number): RawEntry[] {

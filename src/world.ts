@@ -38,6 +38,10 @@ import { expandDirs, loadDocs, searchDocs } from './workspace.ts';
 const ENV_PROMPT_FILE = fileURLToPath(new URL('../ENV_PROMPT.md', import.meta.url));
 const WEB_DIR = fileURLToPath(new URL('../webui/', import.meta.url));
 const TICK_MS = 60_000;
+/** 同一张卡两次「主动想起」之间至少隔这么久，别每轮都推同一条。 */
+const PRIME_COOLDOWN_MS = 2 * 3_600_000;
+/** 对方那句话超过这么久就不算「刚说的」，不拿它做预激活。 */
+const PRIME_FRESH_MS = 10 * 60_000;
 
 /**
  * 捕获水位的可信版本号。
@@ -120,6 +124,10 @@ export class MemoryCoreWorld implements World {
   private ticking = false;
   private lastUserProbe = 0;
   private lastUserAt: number | null = null;
+  /** 对方最近说的那一句（游标 + 文本）：预激活拿它当线索，写卡拿它当出处。 */
+  private lastTurn: { cursor: number; text: string; at: number } | null = null;
+  /** 已经为哪一句做过预激活，同一句不重复推。 */
+  private primedFor = '';
   private lastContextAt = 0;
   private lastSaveAt = 0;
   private site: MemorySite | null = null;
@@ -156,6 +164,13 @@ export class MemoryCoreWorld implements World {
     const raw = this.cfg().promiseRepeatDays;
     if (raw === undefined || raw === null) return MEMORY_CORE_DEFAULTS.promiseRepeatDays;
     return Math.max(0, Number(raw) || 0);
+  }
+
+  /** 老部署的 config.json 没有 preactivateLines 这个键，缺省时回落到默认值而不是 0。 */
+  private preactivateCount(): number {
+    const raw = this.cfg().preactivateLines;
+    if (raw === undefined || raw === null) return MEMORY_CORE_DEFAULTS.preactivateLines;
+    return Math.min(3, Math.max(0, Number(raw) || 0));
   }
 
   private load(): void {
@@ -555,7 +570,9 @@ export class MemoryCoreWorld implements World {
     const all = this.store.all();
     const live = this.store.active();
     const day = (ts: string) => formatLocal(ts, this.tz()).slice(0, 10);
-    const dead = live.filter((c) => (c.uses || 0) === 0 && now - Date.parse(c.createdAt) > 7 * 86_400_000);
+    // 被用过 = 工具召回 + 每轮预激活。只算前者会把「系统主动想起过」的卡误判成死卡
+    const touched = (c: { uses?: number; primedCount?: number }) => (c.uses || 0) + (c.primedCount || 0);
+    const dead = live.filter((c) => touched(c) === 0 && now - Date.parse(c.createdAt) > 7 * 86_400_000);
     const count = new Map<string, number>();
     for (const c of live) {
       const d = day(c.createdAt);
@@ -573,7 +590,8 @@ export class MemoryCoreWorld implements World {
       cards: { total: all.length, active: live.length, retired: all.length - live.length, dead: dead.length },
       recall: {
         calls: live.reduce((n, c) => n + (c.uses || 0), 0),
-        cardsTouched: live.filter((c) => (c.uses || 0) > 0).length,
+        cardsTouched: live.filter((c) => touched(c) > 0).length,
+        primed: live.reduce((n, c) => n + (c.primedCount || 0), 0),
       },
       perDay,
       promises: {
@@ -670,6 +688,10 @@ export class MemoryCoreWorld implements World {
     this.state.lastTalkAt = now.toISOString();
     this.state.proactiveDueAt = this.nextDue(now).toISOString();
     this.save(true);
+    // 回合结束时就把下一轮要用的记忆推上去：心跳 60 秒一次，短对话根本等不到它
+    void this.maybePreactivate(now).catch(() => {
+      // 推送失败不影响这一轮
+    });
   }
 
   // ---- 工具实现 ----
@@ -700,6 +722,12 @@ export class MemoryCoreWorld implements World {
       return '承诺必须带 dueAt（ISO 时间，例如 2026-11-06T07:20）。不知道具体时间就问对方一句；确实没有截止时间就写 dueAt:"none"。';
     }
     const dueAt = undated ? undefined : dueAtRaw.replace(' ', 'T');
+    // 出处：写这条时最近的一句对方原话。半小时内才算，太久就对不上了
+    this.probeLastUser(Date.now());
+    const src =
+      this.lastTurn && Date.now() - this.lastTurn.at < 30 * 60_000
+        ? { cursor: this.lastTurn.cursor, ts: new Date(this.lastTurn.at).toISOString() }
+        : undefined;
     const res = this.store.add({
       kind,
       text,
@@ -708,6 +736,7 @@ export class MemoryCoreWorld implements World {
       dueAt,
       source: 'tool',
       origin: 'tool',
+      ...(src ? { src } : {}),
     });
     let extra = '';
     const closes = str(args.closes, 60);
@@ -791,10 +820,16 @@ export class MemoryCoreWorld implements World {
       }
     }
 
+    const withSrc = cards.filter((c) => c.src);
+    if (withSrc.length) push('（带 ↩ 的是改写过的记忆，不是原话；能追到写它时最近的那句）');
     for (const card of cards) {
       const tag = card.kind === 'fact' ? '' : `（${card.kind}）`;
+      const when = card.src ? formatLocal(card.src.ts, tz).slice(5, 10) : '';
+      const mark = when ? ` ↩${when}` : '';
       // 行首这 8 位就是 id：改口/作废时要用它传给 mcore_write 的 closes
-      push(`· ${card.id.slice(0, 8)} ${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 110)}${tag}`);
+      push(
+        `· ${card.id.slice(0, 8)} ${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 110)}${tag}${mark}`,
+      );
     }
     this.store.touch(cards.map((c) => c.id));
     return lines.length ? lines.join('\n') : '没有找到相关的记忆。';
@@ -903,6 +938,7 @@ export class MemoryCoreWorld implements World {
         && (Number(this.state.watermarkVersion ?? 0) < CAPTURE_WATERMARK_VERSION || !this.state.backfillDoneAt),
       );
       await this.maybeContext(now);
+      await this.maybePreactivate(now);
       await this.maybeRemind(now);
       await this.maybeProactive(now);
       await this.maybeNightly(now);
@@ -1047,14 +1083,25 @@ export class MemoryCoreWorld implements World {
       }
       const events = this.host?.store?.range({ origin: 'external', limit: 60 }) ?? [];
       let best = 0;
+      let bestText = '';
+      let bestCursor = -1;
       for (const e of events) {
         if (!re.test(e.senderKey ?? '')) continue;
         const t = Date.parse(e.ts);
-        if (Number.isFinite(t) && t > best) best = t;
+        if (Number.isFinite(t) && t > best) {
+          best = t;
+          bestText = String(e.text ?? '');
+          bestCursor = Number(e.cursor ?? -1);
+        }
       }
       this.lastUserAt = best ? best : null;
+      // 只留最近这一句：太旧的不算「刚说的」，预激活会误触发
+      this.lastTurn = best && bestText.trim()
+        ? { at: best, text: bestText, cursor: Number.isFinite(bestCursor) ? bestCursor : -1 }
+        : null;
     } catch {
       this.lastUserAt = null;
+      this.lastTurn = null;
     }
     return this.lastUserAt;
   }
@@ -1096,6 +1143,49 @@ export class MemoryCoreWorld implements World {
     this.lastContextAt = now.getTime();
     const line = `（你现在：${this.state.activity}${this.state.location ? `，在${this.state.location}` : ''}，精力 ${Math.round(this.state.energy)}，心情${moodLabel(this.state.mood)}）`;
     await this.push('mcore.context', line, 'piggyback', ['snapshot']);
+  }
+
+  /**
+   * 每轮预激活：拿对方刚说的这句当线索，把 2–3 条旧记忆推到眼前。
+   * 这是「不靠模型自觉」的那一环——工具召回要模型主动想起来问，预激活不用。
+   * 只给一行摘要，细节仍然要它自己调 mcore_recall 来要。
+   */
+  private async maybePreactivate(now: Date): Promise<void> {
+    const cfg = this.cfg();
+    const lines = this.preactivateCount();
+    if (!lines || !cfg.memoryEnabled) return;
+    const turn = this.lastTurn;
+    if (!turn || turn.text.trim().length < 4) return;
+    if (now.getTime() - turn.at > PRIME_FRESH_MS) return;
+    // 有 cursor 就用 cursor，没有就退回时间戳——不能因为宿主不给 cursor 就永远不推
+    const key = turn.cursor >= 0 ? `c${turn.cursor}` : `t${turn.at}`;
+    if (this.primedFor === key) return;
+
+    const picked = rankCards(this.store.active(), {
+      // 太长的消息会把线索稀释掉，只取开头一段当查询
+      query: turn.text.slice(0, 200),
+      limit: 8,
+      useAging: cfg.recallUseAging !== false,
+      requireHit: true,
+      minBigrams: 1,
+    })
+      .filter((c) => {
+        const last = Date.parse(c.lastPrimedAt ?? '');
+        return !Number.isFinite(last) || now.getTime() - last > PRIME_COOLDOWN_MS;
+      })
+      .slice(0, lines);
+    if (!picked.length) return;
+
+    const tz = this.tz();
+    const body = picked.map((c) => `· ${clip(c.text, 60)}（${formatLocal(c.createdAt, tz).slice(5, 10)}）`).join('\n');
+    const ok = await this.push(
+      'mcore.prime',
+      `（以前记下的，不是对方刚说的：\n${body}）`,
+      'piggyback',
+    );
+    if (!ok) return;
+    this.primedFor = key;
+    this.store.prime(picked.map((c) => c.id));
   }
 
   private async maybeRemind(now: Date): Promise<void> {
