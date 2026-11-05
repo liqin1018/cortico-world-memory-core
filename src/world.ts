@@ -229,6 +229,13 @@ export class MemoryCoreWorld implements World {
     const cfg = this.cfg();
     const stats = this.store.stats();
     const count = this.countToday();
+    const dayAgo = Date.now() - 86_400_000;
+    const fresh = this.store
+      .active()
+      .filter((c) => {
+        const at = Date.parse(c.createdAt);
+        return Number.isFinite(at) && at >= dayAgo;
+      }).length;
     return {
       label: '记忆核心',
       lamps: [
@@ -255,9 +262,15 @@ export class MemoryCoreWorld implements World {
         },
       ],
       badges: [
+        { label: '记忆', value: stats.total },
+        // 「为什么没有新记忆」是最高频的疑问，所以把 24 小时写入量放到第一屏
+        {
+          label: '24 小时新写入',
+          value: fresh,
+          tone: fresh > 0 ? 'on' : 'off',
+        },
         { label: '今日主动', value: `${count}/${cfg.proactiveDailyCap || '∞'}` },
         { label: '精力', value: Math.round(this.state.energy), tone: this.state.energy < 35 ? 'off' : 'on' },
-        { label: '记忆', value: stats.total },
       ],
       promptDocs: [
         {

@@ -103,17 +103,18 @@ pnpm add cortico-world-memory-core
 | `captureTurns` | `true` | 存对方最近的对话原文，供「搜最近聊过什么」 |
 | `captureSenders` | `^(desktop-pet\.(chat\|message\|answer\|voice)\|private:\|qq\.private\.\|starpost\.private\.)` | 哪些来源算对话（正则匹配 senderKey）。真实 key 长这样：`private:1940008084`、`desktop-pet.chat`；群聊不算 |
 | `captureMinLength` | `4` | 短于这个字数的消息不进原文库 |
-| `rawRetentionDays` | `7` | 热数据天数，超过就按天挪进 `archive/`（不再直接删） |
-| `rawArchiveDays` | `90` | 归档保留天数，`0` = 永久 |
-| `captureBackfill` | `false` | 打开后重启一次：把水位倒回开头重扫历史消息，补录完自动停用 |
+| `rawRetentionDays` | `14` | 热数据天数，超过就按天挪进 `archive/`（不再直接删） |
+| `rawArchiveDays` | `365` | 归档保留天数，`0` = 永久 |
+| `captureBackfill` | `false` | 打开后重启一次：把宿主还留着的历史消息补扫进原文库，只补没扫过的，补完就不会再跑 |
 | `recallLimit` | `5` | 一次召回给几条 |
 | `recallMaxChars` | `600` | 召回结果总字数上限 |
 | `recallUseAging` | `true` | 排序参考「上次被想起的时间」：久不用的旧卡让位；关掉退回只看关键词、标签、权重 |
 | `preactivateLines` | `2` | 每轮按对方刚说的话自动带出几条旧记忆（预激活），不用模型自己去查；`0` = 关，最多 3 条 |
 | `promiseRepeatDays` | `1` | 到期还没做的承诺隔几天再提一次，直到做完或退休；`0` = 只提醒一次 |
 | `proactiveEnabled` | `true` | 主动开口 |
+| `requireRecentUserHours` | `5` | 对方超过这么久没说话就不主动，免得对着空房间说话白花钱 |
 | `proactiveMinGapMin` / `proactiveDailyCap` | `100` / `3` | 主动间隔与每日上限 |
-| `nightlyConsolidate` | `false` | 夜间整理。夜里把当天原文备成一份材料，**下次开口时**才交付（不占额外请求，是一次普通的工具调用） |
+| `nightlyConsolidate` | `true` | 夜间整理。夜里把当天原文备成一份材料，**下次开口时**才交付（不占额外请求，是一次普通的工具调用） |
 | `captureAll` | `false` | 关着只记白名单里那个人的话；打开后群里其他人、以及自己发的消息也落盘。只影响原文库，不增加每轮成本 |
 | `chillAfterDays` | `30` | 多久没被想起就沉到冷层（只沉低权重的「经历 / 临时」，事实、自我、未完成的承诺不动）。每天最多沉 4 条，最多占 25%。冷层不参与预激活和「最近」，搜索仍能找到，可一键回暖；`0` = 关闭 |
 | `siteEnabled` / `sitePort` | `true` / `7801` | 记忆地图 |

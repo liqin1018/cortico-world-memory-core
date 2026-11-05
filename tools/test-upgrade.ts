@@ -654,5 +654,27 @@ const ok = (cond: boolean, msg: string) => {
   await on.stop();
 }
 
+/* 23) 顶部指标：24 小时新写入 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-badge-'));
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const store = (world as unknown as { store: CardStore }).store;
+  store.add({ kind: 'fact', text: '刚写下的一条', weight: 0.6 });
+  store.add({ kind: 'fact', text: '三天前的旧卡', weight: 0.6, createdAt: new Date(Date.now() - 3 * 86_400_000).toISOString() });
+
+  const ui = world.webUi() as unknown as { badges: { label: string; value: unknown }[] };
+  const badge = ui.badges.find((b) => b.label === '24 小时新写入');
+  ok(Boolean(badge), '23) 顶部有「24 小时新写入」指标');
+  ok(Number(badge?.value) === 1, '23) 只算 24 小时内的，旧卡不算');
+  ok(ui.badges[0].label === '记忆', '23) 记忆总数排第一');
+  await world.stop();
+}
+
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);
