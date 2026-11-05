@@ -135,13 +135,13 @@ const num = (
 });
 
 /** 设置页表单：键是 cfg 里的点分路径。全部热更新，改完不用重启。 */
-export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
+const RAW_GROUP: ConfigGroup = {
   id: 'world:memory-core',
   owner: 'world:memory-core',
   schema: {
     type: 'object',
     title: '记忆核心',
-    description: '四套记忆合成的一套：一张卡片表 + 4 个工具 + 一段提示词。前面那四套插件的记忆会在第一次启动时只读导入，原文件不动。',
+    description: '卡片 + 4 个工具 + 一段提示词。装好后角色会自己往里写，也在你开口时自动带出几条旧的。第一次启动会把旧插件的记忆只读导入一次，原文件不动。',
     properties: {
       'worlds.memory-core.proactiveEnabled': {
         type: 'boolean',
@@ -151,7 +151,7 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       },
       'worlds.memory-core.proactiveMinGapMin': num('两次主动的最小间隔', '默认 100 分钟。太短会显得粘人，也费 token。', 15, 720, '分钟'),
       'worlds.memory-core.proactiveJitterMin': num('随机抖动', '在最小间隔上加 0 到这么多分钟的随机量，避免每天准点开口。', 0, 120, '分钟'),
-      'worlds.memory-core.proactiveDailyCap': num('每天主动上限', '每次主动都是一次完整请求，3 次约等于 30 万 token。0 = 不限。', 0, 12, '次'),
+      'worlds.memory-core.proactiveDailyCap': num('每天主动上限', '一次主动约 1-2 万 token（看上下文长度），3 次大概 5 万。0 = 不限。', 0, 12, '次'),
       'worlds.memory-core.idleGateMin': num('对方刚说话后的静默', '窗口内不主动，免得打断。', 0, 240, '分钟'),
       'worlds.memory-core.requireRecentUserHours': num('对方多久没说话就不主动', '超过这个时长就当没人在，主动会对着空房间说话、白花钱。0 = 不限制。', 0, 72, '小时'),
       'worlds.memory-core.promiseRepeatDays': num('承诺隔几天再提一次', '到期还没做的承诺，隔这么多天再提一次，直到做完或退休。默认 1（每天最多一次）；0 = 只提醒一次。', 0, 30, '天'),
@@ -164,13 +164,13 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       'worlds.memory-core.quietEnd': {
         type: 'string',
         title: '免打扰结束',
-        description: '24 小时制 HH:MM。',
+        description: '24 小时制 HH:MM。起止相同等于不启用。',
         'x-hot': true,
       },
       'worlds.memory-core.sleepStart': {
         type: 'string',
         title: '睡觉开始',
-        description: '这个时段里状态会显示「在睡觉」，精力回升。',
+        description: '这个时段里状态显示「在睡觉」，精力按「睡觉」逻辑回升；和免打扰不是一回事——免打扰只是不主动开口。',
         'x-hot': true,
       },
       'worlds.memory-core.sleepEnd': {
@@ -187,12 +187,12 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       'worlds.memory-core.captureTurns': {
         type: 'boolean',
         title: '存对话原文',
-        description: '把对方最近的私聊存成一行行本地文本，供「搜最近聊过什么」。只存这一个方向，不存你自己说的话。',
+        description: '把最近的对话存成一行行本地文本，供「搜最近聊过什么」。默认只存白名单里的人；打开下面那项后，群里其他人和你自己说的也会存。',
         'x-hot': true,
       },
       'worlds.memory-core.captureAll': {
         type: 'boolean',
-        label: '所有人说的话都记',
+        title: '所有人说的话都记',
         description: '关着只记白名单里的人（默认），打开后群里其他人、以及你自己发的也会落盘。落盘只影响原文库，不增加每轮成本。',
         default: false,
       },
@@ -208,7 +208,7 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       'worlds.memory-core.captureBackfill': {
         type: 'boolean',
         title: '重扫历史补录',
-        description: '打开后重启一次：把水位倒回开头，把宿主还留着的历史消息重扫一遍。只做一次，做完自动关掉自己。',
+        description: '打开后重启一次：把宿主还留着的历史消息补扫进原文库。只补没扫过的；补完就不会再跑，开关留着不用管。',
         'x-hot': false,
       },
       'worlds.memory-core.recallLimit': num('一次召回给几条', '默认 5 条。给多了挤占上下文。', 1, 12, '条'),
@@ -224,7 +224,7 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       'worlds.memory-core.nightlyConsolidate': {
         type: 'boolean',
         title: '夜间整理',
-        description: '每晚唤醒一轮，让它把当天的事写成几条 episode。会多一次完整请求（约 8-10 万 token），默认关。',
+        description: '夜里把当天的原文收成一份材料，**等你下次开口时**交给它整理（最多 3 条，能写成 fact 就不写 episode）。不额外发请求。',
         'x-hot': true,
       },
       'worlds.memory-core.nightlyHour': num('夜间整理时间', '24 小时制的小时数。', 0, 23, '点'),
@@ -273,3 +273,59 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
     },
   },
 };
+
+
+/**
+ * 设置页的显示顺序：把「总开关 / 看记忆 / 每轮想起几条」放最前，
+ * 主动开口和作息往后——那些是角色行为，不是记忆本身。
+ * 用显式顺序表而不是直接调换定义位置，改起来不容易漏项。
+ */
+const SETTINGS_ORDER = [
+  'worlds.memory-core.memoryEnabled',
+  'worlds.memory-core.siteEnabled',
+  'worlds.memory-core.sitePort',
+  'worlds.memory-core.preactivateLines',
+  'worlds.memory-core.captureTurns',
+  'worlds.memory-core.captureAll',
+  'worlds.memory-core.captureSenders',
+  'worlds.memory-core.captureMinLength',
+  'worlds.memory-core.recallLimit',
+  'worlds.memory-core.recallMaxChars',
+  'worlds.memory-core.recallUseAging',
+  'worlds.memory-core.chillAfterDays',
+  'worlds.memory-core.rawRetentionDays',
+  'worlds.memory-core.rawArchiveDays',
+  'worlds.memory-core.captureBackfill',
+  'worlds.memory-core.nightlyConsolidate',
+  'worlds.memory-core.nightlyHour',
+  'worlds.memory-core.workspaceScanEnabled',
+  'worlds.memory-core.workspaceDirs',
+  'worlds.memory-core.workspaceExts',
+  'worlds.memory-core.workspaceMaxFiles',
+  'worlds.memory-core.workspaceMaxFileKB',
+  'worlds.memory-core.proactiveEnabled',
+  'worlds.memory-core.proactiveMinGapMin',
+  'worlds.memory-core.proactiveJitterMin',
+  'worlds.memory-core.proactiveDailyCap',
+  'worlds.memory-core.idleGateMin',
+  'worlds.memory-core.requireRecentUserHours',
+  'worlds.memory-core.promiseRepeatDays',
+  'worlds.memory-core.quietStart',
+  'worlds.memory-core.quietEnd',
+  'worlds.memory-core.sleepStart',
+  'worlds.memory-core.sleepEnd',
+  'worlds.memory-core.energyDecayPerHour',
+  'worlds.memory-core.contextEveryMin',
+];
+
+export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = (() => {
+  const props = (RAW_GROUP.schema.properties ?? {}) as Record<string, unknown>;
+  const known = SETTINGS_ORDER.filter((k) => k in props);
+  // 顺序表里没写到的项也不能丢：追加到末尾，宁可顺序难看也别少一个开关
+  const rest = Object.keys(props).filter((k) => !known.includes(k));
+  const ordered = [...known, ...rest].map((k) => [k, props[k]] as const);
+  return {
+    ...RAW_GROUP,
+    schema: { ...RAW_GROUP.schema, properties: Object.fromEntries(ordered) },
+  };
+})();
