@@ -147,6 +147,16 @@ export class MemoryCoreWorld implements World {
     return this.ctx.timezone || 'Asia/Shanghai';
   }
 
+  /**
+   * 周期提醒的天数。老部署的 config.json 里没有这个键（宿主只在首次激活时写入默认值），
+   * 所以不能直接 Number(undefined)，要回落到默认值。
+   */
+  private promiseRepeat(): number {
+    const raw = this.cfg().promiseRepeatDays;
+    if (raw === undefined || raw === null) return MEMORY_CORE_DEFAULTS.promiseRepeatDays;
+    return Math.max(0, Number(raw) || 0);
+  }
+
   private load(): void {
     try {
       const raw = readJson<Partial<CoreState> | null>(join(this.dataDir, 'state.json'), null);
@@ -548,7 +558,7 @@ export class MemoryCoreWorld implements World {
         open: open.length,
         overdue: open.filter((c) => c.dueAt && Date.parse(c.dueAt) <= now).length,
         noDue: open.filter((c) => !c.dueAt).length,
-        repeating: Math.max(0, Number(this.cfg().promiseRepeatDays) || 0),
+        repeating: this.promiseRepeat(),
       },
       raw: { lines: this.raw.size, archivedDays: rawStats.days, archivedLines: this.raw.archiveLines() },
       backup: this.store.backupInfo(),
@@ -660,12 +670,14 @@ export class MemoryCoreWorld implements World {
     if (!CARD_KINDS.includes(kind)) return 'kind 只能是 fact / self / episode / promise / note。';
     const text = str(args.text, 500);
     if (!text) return 'text 不能为空。';
-    const dueAtRaw = str(args.dueAt, 40);
-    // 没有截止时间的承诺等于永远不提醒。宁可让模型当场问一句，也别让它编一个时间。
+    const dueAtRaw = str(args.dueAt, 40).trim();
+    // 没有时间的承诺等于永远不提醒；但也不能逼模型编一个时间。
+    // 所以给一条明确出口：确实没有截止时间就写 none，当成「无截止」存下来，体检页可以补。
+    const undated = /^(none|null|无|没有|无截止)$/i.test(dueAtRaw);
     if (kind === 'promise' && !dueAtRaw) {
-      return '承诺必须带 dueAt（ISO 时间，例如 2026-11-06T07:20）。不知道具体时间就问对方一句「大概什么时候」，别自己估。';
+      return '承诺必须带 dueAt（ISO 时间，例如 2026-11-06T07:20）。不知道具体时间就问对方一句；确实没有截止时间就写 dueAt:"none"。';
     }
-    const dueAt = dueAtRaw ? dueAtRaw.replace(' ', 'T') : undefined;
+    const dueAt = undated ? undefined : dueAtRaw.replace(' ', 'T');
     const res = this.store.add({
       kind,
       text,
@@ -1065,7 +1077,7 @@ export class MemoryCoreWorld implements World {
   }
 
   private async maybeRemind(now: Date): Promise<void> {
-    const due = this.store.duePromises(now.getTime(), Number(this.cfg().promiseRepeatDays) || 0);
+    const due = this.store.duePromises(now.getTime(), this.promiseRepeat());
     if (!due.length) return;
     const lastUser = this.probeLastUser(now.getTime());
     if (this.cfg().requireRecentUserHours > 0) {

@@ -100,10 +100,14 @@ const ok = (cond: boolean, msg: string) => {
   ok(reject.includes('dueAt'), '5) 承诺不带 dueAt → 被拒绝并提示问清楚');
   const accept = String(await write.handler({ kind: 'promise', text: '明早七点二十叫她起床', dueAt: '2026-11-06T07:20' }));
   ok(accept.includes('已记下'), '5) 带 dueAt 的承诺正常写入');
+  const undated = String(await write.handler({ kind: 'promise', text: '答应下次见面给她带那本书', dueAt: 'none' }));
+  ok(undated.includes('已记下'), '5) dueAt 写 none → 允许，存成「无截止」而不是逼模型编时间');
 
   const health = (world as unknown as { healthReport(): Record<string, any> }).healthReport();
   ok(health.cards.active >= 1 && Array.isArray(health.perDay) && health.perDay.length === 14, '5) 体检报告结构正常');
   ok(typeof health.backup.count === 'number' && health.raw.lines === 0, '5) 体检带备份与原文统计');
+  ok(health.promises.noDue === 1, '5) 无截止的承诺被单独统计出来');
+  ok(health.promises.repeating === 1, '5) 默认周期提醒是 1 天（过期未做每天提一次）');
 
   const importBackup = (world as unknown as { importBackup(p: unknown): Record<string, any> }).importBackup.bind(world);
   const report = importBackup({

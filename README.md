@@ -29,7 +29,7 @@ pnpm add cortico-world-memory-core
 
 | 工具 | 作用 |
 |---|---|
-| `mcore_write` | 写一条记忆。`kind` 五选一，可带 `weight` / `tags` / `dueAt`；**`promise` 必须带 `dueAt`**，不知道时间会被拒绝并提示先问；传 `closes` 表示「这条替代了某条旧的」 |
+| `mcore_write` | 写一条记忆。`kind` 五选一，可带 `weight` / `tags` / `dueAt`；**`promise` 必须带 `dueAt`**，不知道时间会被拒绝并提示先问，确实没有截止时间就写 `dueAt: "none"`；传 `closes` 表示「这条替代了某条旧的」 |
 | `mcore_recall` | 查记忆。不传 `query` 就是最近几条；传了就按内容搜，同时搜最近 7 天的对话原文和工作区笔记；`mode=open` 看没做完的承诺和今天的安排；`mode=archive` 翻更早的归档原文 |
 | `mcore_state` | 角色自己的精力 / 心情 / 正在做什么 / 在哪 / 睡没睡 |
 | `mcore_plan` | 今天的日程（增、勾、清空） |
@@ -93,7 +93,7 @@ pnpm add cortico-world-memory-core
 | `recallLimit` | `5` | 一次召回给几条 |
 | `recallMaxChars` | `600` | 召回结果总字数上限 |
 | `recallUseAging` | `true` | 排序参考「上次被想起的时间」：久不用的旧卡让位；关掉退回只看关键词、标签、权重 |
-| `promiseRepeatDays` | `0` | 承诺到期提醒过之后隔几天再提；`0` = 只提醒一次（和旧版一致） |
+| `promiseRepeatDays` | `1` | 到期还没做的承诺隔几天再提一次，直到做完或退休；`0` = 只提醒一次 |
 | `proactiveEnabled` | `true` | 主动开口 |
 | `proactiveMinGapMin` / `proactiveDailyCap` | `100` / `3` | 主动间隔与每日上限 |
 | `nightlyConsolidate` | `false` | 夜间整理（会多一次完整请求，默认关） |

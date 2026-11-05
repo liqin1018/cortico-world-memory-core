@@ -35,7 +35,7 @@ export const TOOL_SPECS: ToolSpec[] = [
         tags: { type: 'array', items: { type: 'string' }, description: '关键词，最多 6 个' },
         dueAt: {
           type: 'string',
-          description: '仅 promise 用：什么时候该做，ISO 时间或 YYYY-MM-DD HH:MM',
+          description: '仅 promise 用：什么时候该做，ISO 或 YYYY-MM-DD HH:MM；确实没有截止时间就写 none',
         },
         closes: { type: 'string', description: '要关掉的旧记录 id（已完成/已失效）' },
       },

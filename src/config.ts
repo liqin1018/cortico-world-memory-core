@@ -19,8 +19,7 @@ export interface MemoryCoreConfig {
   /** 只有最近这么多小时内对方说过话才主动（0 = 不限制）。 */
   requireRecentUserHours: number;
   /** 承诺到期后，隔多少天可以再提醒一次（0 = 只提醒一次）。 */
-  promiseRepeatDays: number;
-  /** 免打扰开始（含）。 */
+  promiseRepeatDays: number;  /** 免打扰开始（含）。 */
   quietStart: string;
   /** 免打扰结束（不含）。 */
   quietEnd: string;
@@ -80,7 +79,7 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   proactiveDailyCap: 3,
   idleGateMin: 20,
   requireRecentUserHours: 8,
-  promiseRepeatDays: 0,
+  promiseRepeatDays: 1,
   quietStart: '23:30',
   quietEnd: '08:00',
   sleepStart: '01:00',
@@ -146,7 +145,7 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
       'worlds.memory-core.proactiveDailyCap': num('每天主动上限', '每次主动都是一次完整请求，3 次约等于 30 万 token。0 = 不限。', 0, 12, '次'),
       'worlds.memory-core.idleGateMin': num('对方刚说话后的静默', '窗口内不主动，免得打断。', 0, 240, '分钟'),
       'worlds.memory-core.requireRecentUserHours': num('对方多久没说话就不主动', '超过这个时长就当没人在，主动会对着空房间说话、白花钱。0 = 不限制。', 0, 72, '小时'),
-      'worlds.memory-core.promiseRepeatDays': num('承诺隔几天再提一次', '到期提醒过一次之后，隔这么多天可以再提。0 = 只提醒一次（默认，和旧版行为一致）。', 0, 30, '天'),
+      'worlds.memory-core.promiseRepeatDays': num('承诺隔几天再提一次', '到期还没做的承诺，隔这么多天再提一次，直到做完或退休。默认 1（每天最多一次）；0 = 只提醒一次。', 0, 30, '天'),
       'worlds.memory-core.quietStart': {
         type: 'string',
         title: '免打扰开始',
