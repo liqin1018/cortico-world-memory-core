@@ -49,6 +49,8 @@ export interface MemoryCoreConfig {
   recallUseAging: boolean;
   /** 每轮主动想起几条（0 = 关）。预激活，不占工具调用。 */
   preactivateLines: number;
+  /** 多久没被想起就沉到冷层（天）。0 = 关闭自动分层。 */
+  chillAfterDays: number;
   /** 每隔多少分钟把状态作为一条事件投递一次（0 = 不投递，最省）。 */
   contextEveryMin: number;
   /** 夜间是否唤醒一轮让角色整理记忆（会多一次完整请求）。 */
@@ -99,6 +101,7 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   recallMaxChars: 600,
   recallUseAging: true,
   preactivateLines: 2,
+  chillAfterDays: 180,
   contextEveryMin: 0,
   nightlyConsolidate: false,
   nightlyHour: 3,
@@ -207,6 +210,7 @@ export const MEMORY_CORE_CONFIG_GROUP: ConfigGroup = {
         description: '排序时参考「上次被想起的时间」：长期没被召回、权重又低的卡排到后面。关掉就退回只看关键词、标签和权重。',
       },
       'worlds.memory-core.preactivateLines': num('每轮主动想起几条', '按对方刚说的话自动带出几条旧记忆，不用模型自己去查。0 = 关。每条约 20 字，默认 2 条。', 0, 3, '条'),
+      'worlds.memory-core.chillAfterDays': num('多久没想起就沉到冷层', '超过这个天数没被用过的低权重记忆会沉到冷层：不再主动想起、不占「最近」，但搜索仍能找到，可一键回暖。0 = 关闭。', 0, 3650, '天'),
       'worlds.memory-core.contextEveryMin': num('状态投递间隔', '每隔这么多分钟把「我在做什么」推到上下文里。0 = 不推（默认，最省）；推一次约 60 token，但每轮都在历史里。', 0, 240, '分钟'),
       'worlds.memory-core.nightlyConsolidate': {
         type: 'boolean',

@@ -45,6 +45,11 @@ export interface Card {
   /** 被「主动想起」过几次（每轮预激活），和 uses（工具召回）分开记。 */
   primedCount?: number;
   lastPrimedAt?: string;
+  /**
+   * 冷层标记：长期没被想起、又不重要的卡沉到这一层。
+   * 不是删除——默认不进召回和预激活，显式搜索仍然找得到，一键回暖。
+   */
+  coldAt?: string;
 }
 
 export interface RawEntry {
@@ -75,6 +80,10 @@ export interface CoreState {
   proactiveDay?: string;
   proactiveCount?: number;
   lastNightlyDay?: string;
+  /** 夜里备好的整理材料：等下一次开口时再交付，别在凌晨三点推给没人看的会话。 */
+  nightlyPending?: { day: string; text: string };
+  /** 冷层每天只判一次，记下今天判过了。 */
+  lastChillDay?: string;
   rawWatermark?: number;
   /** 水位是按哪一版捕获逻辑推进的。旧版用了错的 range 语义，水位不可信，见 CAPTURE_WATERMARK_VERSION。 */
   watermarkVersion?: number;
@@ -217,6 +226,70 @@ export class CardStore {
   /** 在用的卡：默认检索、图谱、列表都只看这些。 */
   active(): Card[] {
     return this.cards.filter((c) => c.status !== 'retired');
+  }
+
+  /** 能进「主动想起」和「最近」的那一层：在用的、还没沉到冷层的。 */
+  recallable(): Card[] {
+    return this.cards.filter((c) => c.status !== 'retired' && !c.coldAt);
+  }
+
+  cold(): Card[] {
+    return this.cards.filter((c) => c.status !== 'retired' && Boolean(c.coldAt));
+  }
+
+  /**
+   * 该冷的卡：好久没被碰过（工具召回和预激活都算）、权重不高、不是没做完的承诺。
+   * 只是候选，真正下沉要显式调用 chill()——分层必须是可逆的、看得见的。
+   */
+  chillEligible(days = 180, now = Date.now()): Card[] {
+    const span = Math.max(0, Number(days) || 0);
+    if (!span) return [];
+    const cutoff = now - span * 86_400_000;
+    const lastTouch = (c: Card) =>
+      Math.max(
+        Date.parse(c.createdAt) || 0,
+        Date.parse(c.lastUsedAt ?? '') || 0,
+        Date.parse(c.lastPrimedAt ?? '') || 0,
+      );
+    return this.active().filter((c) => {
+      if (c.coldAt) return false;
+      if (c.kind === 'promise' && !c.done) return false;
+      if (c.weight > 0.5) return false;
+      if ((c.uses || 0) + (c.primedCount || 0) > 1) return false;
+      return lastTouch(c) < cutoff;
+    });
+  }
+
+  chill(ids: readonly string[]): number {
+    const at = new Date().toISOString();
+    let n = 0;
+    for (const id of ids) {
+      const card = this.find(id);
+      if (!card || card.status === 'retired' || card.coldAt) continue;
+      card.coldAt = at;
+      n += 1;
+    }
+    if (n) {
+      this.dirty = true;
+      this.save(true);
+    }
+    return n;
+  }
+
+  warm(ids: readonly string[]): number {
+    let n = 0;
+    for (const id of ids) {
+      const card = this.find(id);
+      if (!card || !card.coldAt) continue;
+      delete card.coldAt;
+      card.updatedAt = new Date().toISOString();
+      n += 1;
+    }
+    if (n) {
+      this.dirty = true;
+      this.save(true);
+    }
+    return n;
   }
 
   retired(): Card[] {
@@ -533,6 +606,8 @@ export class CardStore {
       if (!card) continue;
       card.uses = (card.uses || 0) + 1;
       card.lastUsedAt = now;
+      // 真被用上了就不该还算「冷」的，顺手回暖
+      delete card.coldAt;
     }
     this.dirty = true;
     this.save(true);
@@ -645,6 +720,7 @@ export class CardStore {
             : undefined,
         primedCount: Number.isFinite(Number(c.primedCount)) ? Number(c.primedCount) : undefined,
         lastPrimedAt: typeof c.lastPrimedAt === 'string' ? c.lastPrimedAt : undefined,
+        coldAt: typeof c.coldAt === 'string' ? c.coldAt : undefined,
       };
       this.cards.push(card);
       byId.add(id);

@@ -1768,6 +1768,21 @@ function renderHealth() {
     </section>
 
     <section class="h-block">
+      <h3>冷层
+        ${h.chill.eligible ? `<button class="btn tiny" id="h-chill">沉下去（${h.chill.eligible}）</button>` : ''}
+        ${h.chill.cold ? `<button class="btn tiny" id="h-warm">全部回暖（${h.chill.cold}）</button>` : ''}
+      </h3>
+      <div class="h-line">
+        <span>冷层里 <b>${h.chill.cold}</b> 条</span>
+        <span class="dim">${
+          h.chill.afterDays
+            ? `超过 ${h.chill.afterDays} 天没被想起的低权重记忆会沉下去；搜索仍然找得到，不删除`
+            : '自动分层已关闭（chillAfterDays = 0）'
+        }</span>
+      </div>
+    </section>
+
+    <section class="h-block">
       <h3>从没被想起的卡 ${h.cards.dead ? `<button class="btn tiny" id="h-retire-dead">全部退休（${h.cards.dead}）</button>` : ''}</h3>
       ${
         dead.length
@@ -1779,6 +1794,34 @@ function renderHealth() {
 
   const fix = $('#h-fix-promises');
   if (fix) fix.addEventListener('click', () => void openMaintenance('promises'));
+  const chillBtn = $('#h-chill');
+  if (chillBtn) {
+    chillBtn.addEventListener('click', async () => {
+      if (!confirm(`把 ${h.chill.eligible} 张很久没被想起的低权重记忆沉到冷层？不删除，随时能回暖。`)) return;
+      try {
+        const res = await api('/api/chill', { method: 'POST', body: '{}' });
+        S.health = null;
+        await load();
+        toast(`${res?.changed ?? 0} 张已沉到冷层`);
+      } catch (err) {
+        toast(`失败：${err.message}`, true);
+      }
+    });
+  }
+  const warmBtn = $('#h-warm');
+  if (warmBtn) {
+    warmBtn.addEventListener('click', async () => {
+      if (!confirm(`把冷层里的 ${h.chill.cold} 张全部捞回来？`)) return;
+      try {
+        const res = await api('/api/warm', { method: 'POST', body: '{}' });
+        S.health = null;
+        await load();
+        toast(`${res?.changed ?? 0} 张已回暖`);
+      } catch (err) {
+        toast(`失败：${err.message}`, true);
+      }
+    });
+  }
   const retireDead = $('#h-retire-dead');
   if (retireDead) {
     retireDead.addEventListener('click', async () => {

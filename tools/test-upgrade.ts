@@ -324,5 +324,110 @@ const ok = (cond: boolean, msg: string) => {
   await world.stop();
 }
 
+/* 13) 冷层：只沉该沉的，能捞回来 */
+{
+  const dir = mkdtempSync(join(tmpdir(), 'mcore-cold-'));
+  const store = new CardStore(dir);
+  const old = new Date(Date.now() - 200 * 86_400_000).toISOString();
+  const plain = store.add({ kind: 'fact', text: '两百天前的一条低权重记忆', weight: 0.4, createdAt: old }).card;
+  const heavy = store.add({ kind: 'fact', text: '两百天前但权重很高的一条', weight: 0.9, createdAt: old }).card;
+  const prom = store.add({ kind: 'promise', text: '两百天前没做完的承诺', weight: 0.4, createdAt: old, dueAt: '2026-01-01T10:00' }).card;
+  const fresh = store.add({ kind: 'fact', text: '昨天刚记的一条', weight: 0.4 }).card;
+
+  const eligible = store.chillEligible(180).map((c) => c.id);
+  ok(eligible.includes(plain.id), '13) 久 + 低权重 → 进候选');
+  ok(!eligible.includes(heavy.id), '13) 高权重不沉');
+  ok(!eligible.includes(prom.id), '13) 没做完的承诺不沉');
+  ok(!eligible.includes(fresh.id), '13) 新的不沉');
+
+  ok(store.chill([plain.id]) === 1, '13) 能沉到冷层');
+  ok(!store.recallable().some((c) => c.id === plain.id), '13) 冷层不进 recallable');
+  ok(store.active().some((c) => c.id === plain.id), '13) 但还在 active 里（没删）');
+  ok(store.warm([plain.id]) === 1 && store.recallable().some((c) => c.id === plain.id), '13) 能一键回暖');
+  ok(store.chillEligible(0).length === 0, '13) chillAfterDays=0 时没有候选');
+}
+
+/* 14) 冷层在召回里的表现：搜索还能找到并标 ❄，「最近」不带它 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-coldrecall-'));
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const write = world.tools().find((t) => t.name === 'mcore_write')!;
+  const recall = world.tools().find((t) => t.name === 'mcore_recall')!;
+  await write.handler({ kind: 'fact', text: '很久以前的一条无关记忆，说要去修自行车', weight: 0.4 });
+  const store = (world as unknown as { store: CardStore }).store;
+  const id = store.active()[0].id;
+  store.chill([id]);
+
+  const recent = String(await recall.handler({}));
+  ok(!recent.includes('自行车'), '14) 「最近」不带冷层');
+  const searched = String(await recall.handler({ mode: 'search', query: '自行车' }));
+  ok(searched.includes('❄'), '14) 搜索仍然找得到冷层，并标 ❄');
+  ok(!store.find(id)?.coldAt, '14) 真被用上一次就自动回暖');
+  await world.stop();
+}
+
+/* 15) 夜间整理：夜里备料，下次开口才交付 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-nightly-'));
+  const pushed: Array<Record<string, any>> = [];
+  const host = {
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    store: { range: () => [] },
+    pushEvent: async (e: Record<string, unknown>) => {
+      pushed.push(e as Record<string, any>);
+      return true;
+    },
+  } as never;
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true, nightlyConsolidate: true, nightlyHour: 1 },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start(host);
+
+  const internals = world as unknown as {
+    maybeNightly(d: Date): Promise<void>;
+    deliverNightly(): Promise<void>;
+    state: { nightlyPending?: { day: string; text: string }; lastNightlyDay?: string };
+    raw: RawLog;
+  };
+  const now = new Date();
+  const iso = now.toISOString();
+
+  // 只有两句：不整
+  internals.raw.add([
+    { cursor: 1, ts: iso, sender: 'private:1', text: '今天出去走了走' },
+    { cursor: 2, ts: iso, sender: 'private:1', text: '有点累' },
+  ]);
+  await internals.maybeNightly(now);
+  ok(!internals.state.nightlyPending, '15) 一天不到四句不备料');
+
+  internals.state.lastNightlyDay = undefined;
+  internals.raw.add([
+    { cursor: 3, ts: iso, sender: 'private:1', text: '明天记得帮我把简历改一下' },
+    { cursor: 4, ts: iso, sender: 'private:1', text: '还有那家店周三要订位' },
+    { cursor: 5, ts: iso, sender: 'private:1', text: '晚上想吃点热的' },
+  ]);
+  await internals.maybeNightly(now);
+  ok(Boolean(internals.state.nightlyPending), '15) 够料时先备着，不立刻推');
+  ok(pushed.length === 0, '15) 凌晨推送的问题没了：备料阶段不 push');
+
+  await internals.deliverNightly();
+  ok(pushed.length === 1 && pushed[0].type === 'mcore.nightly', '15) 下次开口时交付');
+  ok(String(pushed[0]?.text ?? '').includes('最多写 3 条'), '15) 交付内容带「最多 3 条」的硬约束');
+  ok(!internals.state.nightlyPending, '15) 交付后清掉备料');
+
+  await internals.deliverNightly();
+  ok(pushed.length === 1, '15) 不会重复交付');
+  await world.stop();
+}
+
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);

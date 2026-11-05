@@ -75,7 +75,10 @@ export interface HealthReport {
   promises: { open: number; overdue: number; noDue: number; repeating: number };
   raw: { lines: number; archivedDays: number; archivedLines: number };
   backup: { count: number; latest: string | null; dir: string };
+  /** 冷层：沉下去多少、还能再沉多少、门槛多少天。 */
+  chill: { cold: number; eligible: number; afterDays: number };
   deadIds: string[];
+  coldIds: string[];
 }
 
 export interface ImportReport {
@@ -105,6 +108,9 @@ export interface SiteHooks {
   archiveSearch(q: string, days: number, limit: number): RawEntry[];
   /** 删掉一条原文（热数据或归档）。 */
   deleteTurn(cursor: number): boolean;
+  /** 把记忆沉到冷层 / 从冷层捞回来。 */
+  chillCards(ids: string[]): number;
+  warmCards(ids: string[]): number;
   patchState(input: Record<string, unknown>): CoreState;
   planAction(input: Record<string, unknown>): unknown;
   exportAll(fmt: string): { body: string; mime: string; filename: string };
@@ -255,6 +261,14 @@ export class MemorySite {
       const body = await this.body(req);
       const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map((x) => String(x)) : [];
       return this.json(rsp, 200, { removed: this.hooks.purgeCards(ids) });
+    }
+    if (path === '/api/chill' || path === '/api/warm') {
+      if (req.method !== 'POST') return this.text(rsp, 405, 'method not allowed');
+      const body = await this.body(req);
+      const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map((x) => String(x)) : [];
+      // 不带 ids 就是「全部符合条件的」：冷层一键沉、一键回暖
+      const n = path === '/api/chill' ? this.hooks.chillCards(ids) : this.hooks.warmCards(ids);
+      return this.json(rsp, 200, { changed: n });
     }
     if (path === '/api/health' && req.method === 'GET') {
       return this.json(rsp, 200, this.hooks.health());

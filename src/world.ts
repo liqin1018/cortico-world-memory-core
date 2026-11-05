@@ -173,6 +173,13 @@ export class MemoryCoreWorld implements World {
     return Math.min(3, Math.max(0, Number(raw) || 0));
   }
 
+  /** 同样的坑：缺这个键时 Number(undefined) 是 NaN，会把冷层静默关掉。 */
+  private chillDays(): number {
+    const raw = this.cfg().chillAfterDays;
+    if (raw === undefined || raw === null) return MEMORY_CORE_DEFAULTS.chillAfterDays;
+    return Math.max(0, Number(raw) || 0);
+  }
+
   private load(): void {
     try {
       const raw = readJson<Partial<CoreState> | null>(join(this.dataDir, 'state.json'), null);
@@ -495,6 +502,11 @@ export class MemoryCoreWorld implements World {
       deleteTurn: (cursor: number) => this.raw.remove(cursor),
       mergeCards: (keepId: string, dropIds: string[]) => this.store.merge(keepId, dropIds),
       purgeCards: (ids: string[]) => this.store.purge(ids),
+      chillCards: (ids: string[]) =>
+        this.store.chill(
+          ids.length ? ids : this.store.chillEligible(this.chillDays(), Date.now()).map((c) => c.id),
+        ),
+      warmCards: (ids: string[]) => this.store.warm(ids.length ? ids : this.store.cold().map((c) => c.id)),
       patchState: (input: Record<string, unknown>) => {
         if (input.energy !== undefined) this.state.energy = num(input.energy, this.state.energy, 0, 100);
         if (input.mood !== undefined) this.state.mood = num(input.mood, this.state.mood, 0, 100);
@@ -602,7 +614,13 @@ export class MemoryCoreWorld implements World {
       },
       raw: { lines: this.raw.size, archivedDays: rawStats.days, archivedLines: this.raw.archiveLines() },
       backup: this.store.backupInfo(),
+      chill: {
+        cold: this.store.cold().length,
+        eligible: this.store.chillEligible(this.chillDays(), now).length,
+        afterDays: this.chillDays(),
+      },
       deadIds: dead.map((c) => c.id),
+      coldIds: this.store.cold().map((c) => c.id),
     };
   }
 
@@ -691,6 +709,10 @@ export class MemoryCoreWorld implements World {
     // 回合结束时就把下一轮要用的记忆推上去：心跳 60 秒一次，短对话根本等不到它
     void this.maybePreactivate(now).catch(() => {
       // 推送失败不影响这一轮
+    });
+    // 夜里备好的整理材料，趁这次开口交付
+    void this.deliverNightly().catch(() => {
+      // 同上
     });
   }
 
@@ -799,7 +821,7 @@ export class MemoryCoreWorld implements World {
       return out.join('\n').slice(0, maxChars + 40);
     }
 
-    const cards = rankCards(this.store.active(), {
+    const cards = rankCards(mode === 'search' ? this.store.active() : this.store.recallable(), {
       query: mode === 'search' ? query : undefined,
       kind: str(args.kind, 20) || undefined,
       days: num(args.days, 0, 0, 3650) || undefined,
@@ -822,13 +844,15 @@ export class MemoryCoreWorld implements World {
 
     const withSrc = cards.filter((c) => c.src);
     if (withSrc.length) push('（带 ↩ 的是改写过的记忆，不是原话；能追到写它时最近的那句）');
+    if (cards.some((c) => c.coldAt)) push('（❄ 是很久没被想起的旧记忆，仅供参考）');
     for (const card of cards) {
       const tag = card.kind === 'fact' ? '' : `（${card.kind}）`;
       const when = card.src ? formatLocal(card.src.ts, tz).slice(5, 10) : '';
       const mark = when ? ` ↩${when}` : '';
+      const cold = card.coldAt ? '❄' : '';
       // 行首这 8 位就是 id：改口/作废时要用它传给 mcore_write 的 closes
       push(
-        `· ${card.id.slice(0, 8)} ${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 110)}${tag}${mark}`,
+        `· ${card.id.slice(0, 8)} ${cold}${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 110)}${tag}${mark}`,
       );
     }
     this.store.touch(cards.map((c) => c.id));
@@ -942,6 +966,7 @@ export class MemoryCoreWorld implements World {
       await this.maybeRemind(now);
       await this.maybeProactive(now);
       await this.maybeNightly(now);
+      this.maybeChill(now);
       this.save();
     } catch (error) {
       try {
@@ -1161,7 +1186,7 @@ export class MemoryCoreWorld implements World {
     const key = turn.cursor >= 0 ? `c${turn.cursor}` : `t${turn.at}`;
     if (this.primedFor === key) return;
 
-    const picked = rankCards(this.store.active(), {
+    const picked = rankCards(this.store.recallable(), {
       // 太长的消息会把线索稀释掉，只取开头一段当查询
       query: turn.text.slice(0, 200),
       limit: 8,
@@ -1272,18 +1297,69 @@ export class MemoryCoreWorld implements World {
     return '你闲下来，忽然想到对方。';
   }
 
+  /**
+   * 夜里把当天的原文收成一份材料，等下次开口再交付。
+   * 原来是在凌晨三点直接推「去整理一下」——那个点没人说话，推送就躺在历史里没人接。
+   */
   private async maybeNightly(now: Date): Promise<void> {
     const cfg = this.cfg();
     if (!cfg.nightlyConsolidate) return;
     const p = localParts(now, this.tz());
-    if (p.hour !== (Number(cfg.nightlyHour) || 3)) return;
+    // 过了设定的小时之后的第一笔心跳就跑，不要求正好整点：进程早上才起来也能补
+    if (p.hour < (Number(cfg.nightlyHour) || 3)) return;
     if (this.state.lastNightlyDay === p.date) return;
-    const recent = this.raw.all().slice(-40).map((e) => `· ${e.text}`).join('\n');
-    const text = `（夜里整理）把今天的事写成 1-2 条 episode，把答应过没做完的写成 promise（带 dueAt），用 mcore_write 写。只写新的，不要重复。\n最近的对话：\n${clip(recent, 1200)}`;
-    const ok = await this.push('mcore.nightly', text, 'flush');
-    if (ok) {
+
+    const done = () => {
       this.state.lastNightlyDay = p.date;
       this.save(true);
+    };
+
+    const since = now.getTime() - 86_400_000;
+    const turns = this.raw.all().filter((e) => (Date.parse(e.ts) || 0) >= since);
+    // 一天不到四句，没什么可整的
+    if (turns.length < 4) return done();
+    // 白天已经自己写了 3 条以上，说明模型记得，别再催
+    const wroteToday = this.store
+      .active()
+      .filter((c) => c.source === 'tool' && formatLocal(c.createdAt, this.tz()).slice(0, 10) === p.date).length;
+    if (wroteToday >= 3) return done();
+
+    const body = turns.slice(-40).map((e) => `· ${clip(e.text, 60)}`).join('\n');
+    this.state.nightlyPending = { day: p.date, text: clip(body, 1100) };
+    done();
+  }
+
+  /** 有备好的整理材料，就趁这次开口交付（回合结束时调用）。 */
+  private async deliverNightly(): Promise<void> {
+    const pending = this.state.nightlyPending;
+    if (!pending) return;
+    const today = formatLocal(new Date(), this.tz()).slice(0, 10);
+    const age = (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${pending.day}T00:00:00Z`)) / 86_400_000;
+    // 放太久就别再翻旧账了
+    if (!Number.isFinite(age) || age > 2) {
+      delete this.state.nightlyPending;
+      this.save();
+      return;
     }
+    const ok = await this.push(
+      'mcore.nightly',
+      `（昨天留下的这些，顺手整理一下：最多写 3 条；能写成 fact 就别写成 episode；有承诺就带 dueAt；库里已有的别重复。\n${pending.text}）`,
+      'piggyback',
+    );
+    if (!ok) return;
+    delete this.state.nightlyPending;
+    this.save(true);
+  }
+
+  /** 每天判一次冷层：只标记，不删除。 */
+  private maybeChill(now: Date): void {
+    const days = this.chillDays();
+    if (!days) return;
+    const today = formatLocal(now, this.tz()).slice(0, 10);
+    if (this.state.lastChillDay === today) return;
+    this.state.lastChillDay = today;
+    const ids = this.store.chillEligible(days, now.getTime()).map((c) => c.id);
+    if (ids.length) this.store.chill(ids);
+    this.save();
   }
 }
