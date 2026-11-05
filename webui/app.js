@@ -251,8 +251,12 @@ function readThemeHandoff() {
 
 function applyTheme() {
   invalidatePalette();
-  const handoff = readThemeHandoff();
   const root = document.documentElement;
+  // 调试/截图用：?theme=light|dark|auto 直接定死
+  const forced = new URLSearchParams(location.search).get('theme');
+  const saved = forced ?? localStorage.getItem('mcore-mode') ?? 'auto';
+  // 用户手动选过就听用户的：宿主主题快照不再覆盖，否则按钮点了没反应
+  const handoff = saved === 'auto' ? readThemeHandoff() : null;
   if (handoff) {
     root.dataset.mode = handoff.appearance === 'light' ? 'light' : 'dark';
     for (const [key, value] of Object.entries(handoff.palette)) {
@@ -260,20 +264,25 @@ function applyTheme() {
     }
     return;
   }
-  const saved = localStorage.getItem('mcore-mode') ?? 'auto';
-  root.dataset.mode = saved;
+  root.dataset.mode = saved === 'light' ? 'light' : saved === 'dark' ? 'dark' : 'auto';
+}
+
+/** 现在屏幕上到底是什么样：auto 和宿主快照都折算成 light / dark。 */
+function currentAppearance() {
+  const mode = document.documentElement.dataset.mode;
+  if (mode === 'light' || mode === 'dark') return mode;
+  return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
 $('#btn-theme').addEventListener('click', () => {
-  const order = ['auto', 'light', 'dark'];
-  const current = localStorage.getItem('mcore-mode') ?? 'auto';
-  const next = order[(order.indexOf(current) + 1) % order.length];
-  if (next === 'auto') localStorage.removeItem('mcore-mode');
-  else localStorage.setItem('mcore-mode', next);
+  // 按「屏幕上现在是什么」翻面：每次都一定看得见变化，
+  // 不会出现「本来是浅色，点了先跳到 auto 还是浅色，以为坏了」。
+  const next = currentAppearance() === 'light' ? 'dark' : 'light';
+  localStorage.setItem('mcore-mode', next);
   document.documentElement.removeAttribute('style');
   applyTheme();
   render();
-  toast(next === 'auto' ? '跟随系统' : next === 'light' ? '浅色' : '深色');
+  toast(next === 'light' ? '浅色' : '深色');
 });
 
 /* ── 数据与筛选 ─────────────────────────────────────── */
