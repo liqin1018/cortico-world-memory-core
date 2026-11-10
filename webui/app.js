@@ -2587,6 +2587,13 @@ function renderHealth() {
       </div>`,
     )
     .join('');
+  const wk = h.recent?.byKind ?? {};
+  const week = {
+    fact: wk.fact ?? 0,
+    self: wk.self ?? 0,
+    episode: wk.episode ?? 0,
+    promise: wk.promise ?? 0,
+  };
   const dead = h.deadIds.map((id) => cards().find((c) => c.id === id)).filter(Boolean);
   const deadRows = dead
     .slice(0, 20)
@@ -2611,6 +2618,21 @@ function renderHealth() {
     <section class="h-block">
       <h3>近 14 天新增</h3>
       <div class="h-chart">${bars}</div>
+    </section>
+
+    <section class="h-block">
+      <h3>近 7 天新增了什么</h3>
+      <div class="h-line">
+        <span class="${(week.fact + week.self) === 0 ? 'warn' : ''}">事实 <b>${week.fact}</b></span>
+        <span>自己 / 关系 <b>${week.self}</b></span>
+        <span>经历 <b>${week.episode}</b></span>
+        <span class="${week.promise ? '' : 'dim'}">承诺 <b>${week.promise}</b></span>
+        <span class="dim">${
+          week.fact + week.self === 0
+            ? '这周没记下任何「她是谁」——聊天时可以直接说「记一下」'
+            : '事实和自我比经历更该沉淀；全是经历说明在记流水账'
+        }</span>
+      </div>
     </section>
 
     <section class="h-block">

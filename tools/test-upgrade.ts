@@ -703,5 +703,29 @@ const ok = (cond: boolean, msg: string) => {
   await world.stop();
 }
 
+/* 25) 体检页：近 7 天按类型分类 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-week-'));
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const store = (world as unknown as { store: CardStore }).store;
+  const old = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  store.add({ kind: 'fact', text: '这周记下的一条事实', weight: 0.6 });
+  store.add({ kind: 'episode', text: '这周记下的一条经历', weight: 0.4 });
+  store.add({ kind: 'fact', text: '一个月前的旧事实', weight: 0.6, createdAt: old });
+
+  const h = (world as unknown as { healthReport(): { recent: { days: number; byKind: Record<string, number> } } })
+    .healthReport();
+  ok(h.recent.days === 7, '25) 窗口是 7 天');
+  ok(h.recent.byKind.fact === 1, '25) 只算 7 天内的（旧事实不算）');
+  ok(h.recent.byKind.episode === 1, '25) 经历分开计数');
+  await world.stop();
+}
+
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);

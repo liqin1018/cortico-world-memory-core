@@ -618,6 +618,13 @@ export class MemoryCoreWorld implements World {
       const d = formatLocal(new Date(now - i * 86_400_000), this.tz()).slice(0, 10);
       perDay.push({ day: d, n: count.get(d) || 0 });
     }
+    // 近 7 天按类型分开数：total 看不出「记的全是流水账」
+    const weekAgo = now - 7 * 86_400_000;
+    const byKind: Record<string, number> = {};
+    for (const c of live) {
+      if ((Date.parse(c.createdAt) || 0) < weekAgo) continue;
+      byKind[c.kind] = (byKind[c.kind] || 0) + 1;
+    }
     const open = live.filter((c) => c.kind === 'promise' && !c.done);
     const rawStats = this.raw.stats();
     return {
@@ -629,6 +636,7 @@ export class MemoryCoreWorld implements World {
         primed: live.reduce((n, c) => n + (c.primedCount || 0), 0),
       },
       perDay,
+      recent: { days: 7, byKind },
       promises: {
         open: open.length,
         overdue: open.filter((c) => c.dueAt && Date.parse(c.dueAt) <= now).length,
