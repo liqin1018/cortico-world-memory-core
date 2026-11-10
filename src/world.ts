@@ -998,18 +998,24 @@ export class MemoryCoreWorld implements World {
   private handleVoice(limit: number): string {
     const re = this.senderRe(this.cfg());
     const all = this.raw.all();
-    const out: string[] = [];
+    // 界面回执、菜单选择这类「不是人话」的句子，听不出语气还占位置
+    const junk = /^(选了|点了|返回|打开|关闭|确认|取消|已)/;
+    const natural = (t: string) => t.length >= 10 && t.length <= 60 && /[，。！？…]/.test(t) && !junk.test(t);
     const seen = new Set<string>();
-    for (let i = all.length - 1; i >= 0 && out.length < limit; i -= 1) {
-      const e = all[i];
-      if (!re.test(e.sender ?? '')) continue;
-      const text = String(e.text ?? '').replace(/\s+/g, ' ').trim();
-      // 太短的（「嗯」「在」）听不出语气，太长的又像在读文章
-      if (text.length < 6 || text.length > 80) continue;
-      if (seen.has(text)) continue;
-      seen.add(text);
-      out.push(`· ${text}`);
-    }
+    const pick = (test: (t: string) => boolean, bag: string[]) => {
+      for (let i = all.length - 1; i >= 0 && bag.length < limit; i -= 1) {
+        const e = all[i];
+        if (!re.test(e.sender ?? '')) continue;
+        const text = String(e.text ?? '').replace(/\s+/g, ' ').trim();
+        if (text.length < 6 || text.length > 80 || seen.has(text) || !test(text)) continue;
+        seen.add(text);
+        bag.push(`· ${text}`);
+      }
+    };
+    const out: string[] = [];
+    // 先挑像人话的（有标点、长度适中），不够再用短的凑
+    pick(natural, out);
+    if (out.length < limit) pick((t) => t.length >= 6, out);
     if (!out.length) return '最近没有能听语气的原话（原文库可能是空的，或者都被过滤了）。';
     return `（这几句是对方最近说的原话，用来听语气。别复述、别总结，用你自己的话说：\n${out.join('\n')}）`;
   }
