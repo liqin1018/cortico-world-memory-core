@@ -48,7 +48,7 @@ export const TOOL_SPECS: ToolSpec[] = [
         query: { type: 'string', description: '关键词就够' },
         id: { type: 'string', description: '看某条记忆的出处（传行首 8 位），会给出当时的原话和前后文' },
         kind: { type: 'string', enum: ['fact', 'self', 'episode', 'promise', 'note'], description: '只看某一类' },
-        mode: { type: 'string', enum: ['search', 'recent', 'open', 'archive'], description: '默认 search' },
+        mode: { type: 'string', enum: ['search', 'recent', 'open', 'archive', 'voice'], description: '默认 search；voice = 给几句对方原话听语气' },
         days: { type: 'integer', description: '只看最近这么多天' },
         limit: { type: 'integer', description: '最多几条，默认 5' },
       },

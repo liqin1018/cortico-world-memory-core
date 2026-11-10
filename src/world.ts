@@ -885,6 +885,9 @@ export class MemoryCoreWorld implements World {
       return lines.length ? lines.join('\n') : '没有未完成的事。';
     }
 
+    if (mode === 'voice') {
+      return this.handleVoice(limit);
+    }
     if (mode === 'archive') {
       if (!query) return '翻归档要带 query，给几个关键词。';
       const span = num(args.days, 30, 1, 3650);
@@ -986,6 +989,29 @@ export class MemoryCoreWorld implements World {
       `下次主动约 ${dueAt}；今天已主动 ${count}/${this.cfg().proactiveDailyCap || '∞'} 次。`,
       `记忆 ${stats.total} 条，对话原文 ${this.raw.size} 行。`,
     ].join('\n');
+  }
+
+  /**
+   * 听语气：把对方最近说的几句原话原样给出来。
+   * 卡片记不住「口气」——那是样本，不是结论，所以这里直接给样本。
+   */
+  private handleVoice(limit: number): string {
+    const re = this.senderRe(this.cfg());
+    const all = this.raw.all();
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (let i = all.length - 1; i >= 0 && out.length < limit; i -= 1) {
+      const e = all[i];
+      if (!re.test(e.sender ?? '')) continue;
+      const text = String(e.text ?? '').replace(/\s+/g, ' ').trim();
+      // 太短的（「嗯」「在」）听不出语气，太长的又像在读文章
+      if (text.length < 6 || text.length > 80) continue;
+      if (seen.has(text)) continue;
+      seen.add(text);
+      out.push(`· ${text}`);
+    }
+    if (!out.length) return '最近没有能听语气的原话（原文库可能是空的，或者都被过滤了）。';
+    return `（这几句是对方最近说的原话，用来听语气。别复述、别总结，用你自己的话说：\n${out.join('\n')}）`;
   }
 
   /**
@@ -1370,7 +1396,7 @@ export class MemoryCoreWorld implements World {
     const body = picked.map((c) => `· ${clip(c.text, 60)}（${formatLocal(c.createdAt, tz).slice(5, 10)}）`).join('\n');
     const ok = await this.push(
       'mcore.prime',
-      `（以前记下的，不是对方刚说的：\n${body}）`,
+      `（你想起几件事（不是对方刚说的），合适就用，别当清单念：\n${body}）`,
       'piggyback',
     );
     if (!ok) return;

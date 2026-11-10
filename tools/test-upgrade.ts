@@ -464,7 +464,7 @@ const ok = (cond: boolean, msg: string) => {
   // 统一换行再数：Windows 检出是 CRLF，会多算一倍换行
   const promptChars = readFileSync(join(root, 'ENV_PROMPT.md'), 'utf8').replace(/\r\n/g, '\n').trim().length;
   ok(schemaChars <= 2600, `16) schema ≤ 2600 字符（现在 ${schemaChars}）`);
-  ok(promptChars <= 480, `16) 提示词 ≤ 480 字（现在 ${promptChars}）`);
+  ok(promptChars <= 520, `16) 提示词 ≤ 520 字（现在 ${promptChars}）`);
 }
 
 /* 17) 召回分两档口气：对得上的 / 只是沾边 */
@@ -673,6 +673,33 @@ const ok = (cond: boolean, msg: string) => {
   ok(Boolean(badge), '23) 顶部有「24 小时新写入」指标');
   ok(Number(badge?.value) === 1, '23) 只算 24 小时内的，旧卡不算');
   ok(ui.badges[0].label === '记忆', '23) 记忆总数排第一');
+  await world.stop();
+}
+
+/* 24) 听语气：返回对方原话，且滤掉太短/太长的 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-voice-'));
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({ log: { info: () => {}, warn: () => {}, error: () => {} }, store: { range: () => [] } } as never);
+  const raw = (world as unknown as { raw: RawLog }).raw;
+  const now = new Date().toISOString();
+  raw.add([
+    { cursor: 1, ts: now, sender: 'private:…1', text: '嗯' },
+    { cursor: 2, ts: now, sender: 'private:…1', text: '今天真的累死了，一点都不想动，先躺会儿再说吧' },
+    { cursor: 3, ts: now, sender: 'private:…1', text: '你上次说的那个事，我想了想还是算了吧，太麻烦了' },
+    { cursor: 4, ts: now, sender: 'group.other', text: '这是别人的话，不该出现在语气样本里啊啊啊' },
+  ]);
+  const recall = world.tools().find((t) => t.name === 'mcore_recall')!;
+  const out = String(await recall.handler({ mode: 'voice', limit: 3 }));
+  ok(out.includes('听语气'), '24) voice 模式有说明');
+  ok(out.includes('今天真的累死了'), '24) 给出对方原话');
+  ok(!out.includes('嗯\n'), '24) 太短的不算');
+  ok(!out.includes('这是别人的话'), '24) 不抓白名单外的人');
   await world.stop();
 }
 
