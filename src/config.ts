@@ -106,6 +106,8 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   preactivateLines: 2,
   /** 对方开口时，把「自我意识」插件独处时写下的那一句带进上下文。 */
   shareSelfThought: true,
+  /** 把她独处时特别在意的那些（重要度 8 以上）写成 self 卡片，进星图。 */
+  absorbSelfThought: true,
   chillAfterDays: 30,
   contextEveryMin: 0,
   nightlyConsolidate: true,
@@ -190,6 +192,12 @@ const RAW_GROUP: ConfigGroup = {
         type: 'boolean',
         title: '带上她独处时写下的话',
         description: '对方开口时，把她一个人待着时写在本子上的一句带进上下文——会标明时间，也会说明「不一定是你现在的想法」。关掉就只是本地记录，永远不进对话。',
+        default: true,
+      },
+      'worlds.memory-core.absorbSelfThought': {
+        type: 'boolean',
+        title: '独处时的想法进记忆',
+        description: '她独处时写下的、她自己标成「很重要」的那些（8 分以上），会收成一条「关于她自己」的记忆，出现在星图上。卡片里会写清「独处时写下」，不会被当成此刻的想法。',
         default: true,
       },
       'worlds.memory-core.captureTurns': {
@@ -294,6 +302,7 @@ const SETTINGS_ORDER = [
   'worlds.memory-core.sitePort',
   'worlds.memory-core.preactivateLines',
   'worlds.memory-core.shareSelfThought',
+  'worlds.memory-core.absorbSelfThought',
   'worlds.memory-core.captureTurns',
   'worlds.memory-core.captureAll',
   'worlds.memory-core.captureSenders',

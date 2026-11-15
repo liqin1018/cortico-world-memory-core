@@ -87,6 +87,8 @@ export interface CoreState {
   lastChillDay?: string;
   /** 自我意识插件写过的那条想法，已经推给主模型了——别每轮都推同一条。 */
   lastSelfThoughtId?: string;
+  /** 已经收成卡片的想法 id（只留最近 100 个，够防重复了）。 */
+  absorbedThoughtIds?: string[];
   rawWatermark?: number;
   /** 水位是按哪一版捕获逻辑推进的。旧版用了错的 range 语义，水位不可信，见 CAPTURE_WATERMARK_VERSION。 */
   watermarkVersion?: number;

@@ -1160,6 +1160,7 @@ export class MemoryCoreWorld implements World {
         Boolean(this.cfg().captureBackfill)
         && (Number(this.state.watermarkVersion ?? 0) < CAPTURE_WATERMARK_VERSION || !this.state.backfillDoneAt),
       );
+      this.absorbThoughts(now);
       await this.maybeContext(now);
       await this.maybePreactivate(now);
       await this.maybeRemind(now);
@@ -1431,6 +1432,74 @@ export class MemoryCoreWorld implements World {
     }
   }
 
+  /** 读最近的想法原文，按时间倒序。没装那个插件就返回空数组。 */
+  private readThoughts(limit = 40): { id: string; ts: string; text: string; importance: number }[] {
+    const file = join(this.dataDir, '..', 'self-awareness', 'thoughts.jsonl');
+    if (!existsSync(file)) return [];
+    let lines: string[] = [];
+    try {
+      lines = readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-limit);
+    } catch {
+      return [];
+    }
+    const out: { id: string; ts: string; text: string; importance: number }[] = [];
+    for (const line of lines) {
+      try {
+        const t = JSON.parse(line) as { id?: string; ts?: string; text?: string; importance?: number };
+        if (!t.text) continue;
+        out.push({
+          id: String(t.id ?? ''),
+          ts: String(t.ts ?? ''),
+          text: String(t.text),
+          importance: Number(t.importance) || 0,
+        });
+      } catch {
+        // 坏行跳过
+      }
+    }
+    return out.reverse();
+  }
+
+  /**
+   * 把「她自己标成很重要」的想法收成一张 self 卡片。
+   * 文本前面加「独处时写下」——不然它会以卡片的身份进上下文，被当成此刻的想法，
+   * 那又变成替她认领了。
+   */
+  private absorbThoughts(now: Date): void {
+    if (this.cfg().absorbSelfThought === false) return;
+    const done = new Set(this.state.absorbedThoughtIds ?? []);
+    const fresh = this.readThoughts(40).filter((t) => t.importance >= 8 && t.id && !done.has(t.id));
+    if (!fresh.length) return;
+    let added = 0;
+    for (const t of fresh.slice(0, 3)) {
+      const age = now.getTime() - (Date.parse(t.ts) || 0);
+      // 太旧的想法别补写进来，那是在翻旧账
+      const freshEnough = !Number.isFinite(age) || age < 24 * 3_600_000;
+      if (freshEnough) {
+        const text = clip(`独处时写下：${t.text}`, 200);
+        this.store.add({
+          kind: 'self',
+          text,
+          weight: 0.6,
+          // 打个标签：星图的航道（跨区同标签连线）和图例才认得出来这是「独处」来的
+          tags: ['独处'],
+          source: 'self-awareness',
+          origin: 'tool',
+        });
+        added += 1;
+      }
+      done.add(t.id);
+    }
+    this.state.absorbedThoughtIds = [...done].slice(-100);
+    if (added) {
+      try {
+        this.host?.log?.info?.('[memory-core] 收下了她独处时的想法', { count: added });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   /**
    * 从自我意识插件的 thoughts.jsonl 里挑一条。
    * 选法：和对方刚说的话有词面重叠的优先，其次挑新鲜的；6 小时以外的不要。
@@ -1531,10 +1600,23 @@ export class MemoryCoreWorld implements World {
 
     const since = lastUser ? humanSpan(now.getTime() - lastUser) : null;
     const reason = this.reasonFor(now);
+    // 刚一个人想过什么，是比「几点几分」更好的由头
+    const think = this.cfg().shareSelfThought === false
+      ? null
+      : this.readThoughts(10).find((t) => {
+          if (t.id && t.id === this.state.lastSelfThoughtId) return false;
+          const age = now.getTime() - (Date.parse(t.ts) || 0);
+          return Number.isFinite(age) && age < 1.5 * 3_600_000;
+        }) ?? null;
+    const thinkLine = think ? `\n（你刚才一个人在想的：${clip(think.text, 60)}）` : '';
     const text = `（由头：${formatLocal(now, this.tz()).slice(11)}，你${this.state.activity}`
       + `${this.state.location ? `，在${this.state.location}` : ''}，精力 ${Math.round(this.state.energy)}`
-      + `${since ? `；上次说话是 ${since} 前` : ''}。${reason}）想主动跟对方说一句，别问「在吗」，直接说你此刻的事。`;
+      + `${since ? `；上次说话是 ${since} 前` : ''}。${reason}${thinkLine}）想主动跟对方说一句，别问「在吗」，直接说你此刻的事。`;
     const ok = await this.push('mcore.wake', text, 'flush');
+    if (ok && think) {
+      this.state.lastSelfThoughtId = think.id;
+      this.save();
+    }
     if (!ok) {
       defer(15);
       return;

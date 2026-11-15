@@ -839,5 +839,45 @@ const ok = (cond: boolean, msg: string) => {
   ok(!off.includes('本子上写过'), '27) 开关关掉后一条都不带');
 }
 
+/* 28) 重要度 8 以上的想法收成 self 卡片，且只收一次 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-absorb-'));
+  const saDir = join(dataDir, 'self-awareness');
+  mkdirSync(saDir, { recursive: true });
+  const now = new Date().toISOString();
+  writeFileSync(join(saDir, 'thoughts.jsonl'), [
+    JSON.stringify({ id: 'h1', ts: now, mode: 'doubt', text: '我一直在等的是一句准话', importance: 9, seeds: [] }),
+    JSON.stringify({ id: 'h2', ts: now, mode: 'wonder', text: '这茶有点凉了', importance: 4, seeds: [] }),
+  ].join('\n') + '\n', 'utf8');
+
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start({
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    store: { range: () => [] },
+    pushEvent: async () => true,
+  } as never);
+
+  const store = (world as unknown as { store: CardStore }).store;
+  const internals = world as unknown as { absorbThoughts(now: Date): void; state: { absorbedThoughtIds?: string[] } };
+
+  internals.absorbThoughts(new Date());
+  const selfCards = store.active().filter((c) => c.kind === 'self');
+  ok(selfCards.length === 1, '28) 9 分那条收成了卡片，4 分的不收');
+  ok(String(selfCards[0]?.text ?? '').startsWith('独处时写下：'), '28) 卡片带「独处时写下」，不会被当成此刻的想法');
+  ok(String(selfCards[0]?.text ?? '').includes('准话'), '28) 收的是正文');
+  ok(store.active().length === 1, '28) 只写了一张');
+  ok(selfCards[0]?.tags.includes('独处'), '28) 打了「独处」标签，星图上认得出');
+
+  internals.absorbThoughts(new Date());
+  ok(store.active().filter((c) => c.kind === 'self').length === 1, '28) 再跑一次不重复收');
+  ok((internals.state.absorbedThoughtIds ?? []).length === 1, '28) 只给收下的那条记 id');
+  await world.stop();
+}
+
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);
