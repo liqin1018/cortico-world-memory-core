@@ -996,6 +996,8 @@ class Graph {
 
 const GALAXY_KIND = { fact: '事实', self: '自己', episode: '经历', promise: '承诺', note: '临时' };
 const GALAXY_COLOR = { fact: '#8ef0dc', self: '#9ab8ff', episode: '#ffc078', promise: '#ff9ec4', note: '#c3ccd8' };
+/** 攒够 3 张就独立成团的标签，可以有自己的颜色。色相要和它的 kind 拉开，一眼能分。 */
+const GALAXY_TAG_COLOR = { 独处: '#c9a2ff' };
 const GALAXY_CAM = 1900;
 
 /** 固定种子：同一批卡片每次布出来的星系一样。 */
@@ -1321,7 +1323,7 @@ class Galaxy {
         this.nodes.push(node);
       });
       g.hub = g.nodes.reduce((b, n) => (Number(n.card.weight) > Number(b.card.weight) ? n : b), g.nodes[0]);
-      g.color = GALAXY_COLOR[g.hub.card.kind] ?? '#c3ccd8';
+      g.color = GALAXY_TAG_COLOR[g.name] ?? GALAXY_COLOR[g.hub.card.kind] ?? '#c3ccd8';
       g.rz = gauss() * RMAX * 0.04;
     }
 
@@ -1804,13 +1806,18 @@ function renderGalaxyLegend() {
   const host = $('#galaxy-legend');
   if (!host || !galaxy) return;
   const counts = galaxy.kindCounts ?? {};
-  host.innerHTML = Object.keys(GALAXY_KIND)
+  const parts = Object.keys(GALAXY_KIND)
     .filter((k) => counts[k])
     .map(
       (k) =>
         `<span style="color:${GALAXY_COLOR[k]}"><i style="background:${GALAXY_COLOR[k]}"></i>${GALAXY_KIND[k]} ${counts[k]}</span>`,
-    )
-    .join('');
+    );
+  // 独立成团的标签单独列一行：它已经从「自己」里分出去了，混在一起会让人数不上
+  for (const [tag, color] of Object.entries(GALAXY_TAG_COLOR)) {
+    const n = cards().filter((c) => (c.tags ?? []).includes(tag)).length;
+    if (n >= 3) parts.push(`<span style="color:${color}"><i style="background:${color}"></i>${tag} ${n}</span>`);
+  }
+  host.innerHTML = parts.join('');
 }
 
 let graph = null;
