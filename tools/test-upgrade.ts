@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CardStore, RawLog } from '../src/store.ts';
+import { CardStore, RawLog, demoteTech } from '../src/store.ts';
 import { rankCards, rankCardsScored, rankRaw } from '../src/recall.ts';
 import { MemoryCoreWorld } from '../src/world.ts';
 import { MEMORY_CORE_DEFAULTS } from '../src/config.ts';
@@ -885,6 +885,34 @@ const ok = (cond: boolean, msg: string) => {
   ok(!store.active().some((c) => String(c.text).includes('object Object')), '28) 坏数据不会变成 [object Object] 卡片');
   ok(store.active().length === 1, '28) 空字符串那条也没进库');
   await world.stop();
+}
+
+/* 29) 降噪：技术操作不占 episode 的位置，生活记录不受影响 */
+{
+  const tech = [
+    '11-04 的两条都发了：B站动态和小黑盒帖子 link_id 196024900',
+    '11-04 用月那张图（20261101-173144-479589cc.png）发了帖子',
+    '11-15 额度从1改到4，但 stroll_act post 仍报 DAILY_CAP(4)',
+    '11-14 测出图接口：返回 502「no available upstream」',
+    '路径在 F:\\Coopanion\\data\\memory-core 下面',
+  ];
+  const life = [
+    '11-02 从兰州坐十个半小时车到西安，住进一间有潮味的老式招待所。',
+    '11-04 深夜情绪低落，月一句句贴过来，哄完才睡。',
+    '夜里单刷魔戒（A/16），把戒指带了出来，收在怀里。',
+  ];
+  for (const t of tech) ok(demoteTech('episode', t) === 'note', `29) 技术日志降级：${t.slice(0, 16)}…`);
+  for (const t of life) ok(demoteTech('episode', t) === 'episode', `29) 生活记录保留：${t.slice(0, 16)}…`);
+  ok(demoteTech('fact', 'link_id 196024900') === 'fact', '29) 别的类型不参与降噪');
+
+  // 导入的历史数据不动
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-scrub-'));
+  const store = new CardStore(dataDir);
+  store.add({ kind: 'episode', text: '旧导入：用那张图发了帖子 link_id 123', source: 'import' });
+  store.add({ kind: 'episode', text: '新写的：用那张图发了帖子 link_id 456', source: 'tool' });
+  const all = store.active();
+  ok(all.find((c) => c.text.includes('123'))?.kind === 'episode', '29) 导入的旧数据不被改');
+  ok(all.find((c) => c.text.includes('456'))?.kind === 'note', '29) 模型新写的会被降级');
 }
 
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');

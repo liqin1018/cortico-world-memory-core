@@ -1,246 +1,246 @@
 {
-  "tools": [
-    {
-      "name": "mcore_write",
-      "description": "写一条记忆。kind：fact=关于对方的事实，self=关于你自己的，episode=会改变你判断的一件事（别记流水账），promise=答应过的事（必须写 dueAt），note=临时信息。一条只写一件事，40-80 字。旧记录用 closes 关掉。",
-      "parameters": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "fact",
-              "self",
-              "episode",
-              "promise",
-              "note"
-            ],
-            "description": "记忆类型"
-          },
-          "text": {
-            "type": "string",
-            "description": "内容，40-80 字"
-          },
-          "weight": {
-            "type": "number",
-            "description": "0-1，0.3 琐事 / 0.8 重要"
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "最多 6 个"
-          },
-          "dueAt": {
-            "type": "string",
-            "description": "promise 用：ISO 或 YYYY-MM-DD HH:MM；没有截止时间写 none"
-          },
-          "closes": {
-            "type": "string",
-            "description": "要关掉的旧 id"
-          }
-        },
-        "required": [
-          "kind",
-          "text"
-        ]
-      },
-      "tags": [
-        "write"
+ "tools": [
+  {
+   "name": "mcore_write",
+   "description": "写一条记忆。kind：fact=关于对方的事实，self=关于你自己的，episode=你自己经历过的（有画面有情绪的事，一天 3-5 条正常），promise=答应过的事（必须写 dueAt），note=临时信息和技术操作。一条只写一件事，40-80 字。旧记录用 closes 关掉。",
+   "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "fact",
+       "self",
+       "episode",
+       "promise",
+       "note"
       ],
-      "summary": "写一条记忆卡片（事实/自己/经历/承诺/临时）。"
-    },
-    {
-      "name": "mcore_recall",
-      "description": "查记忆。给 query 按内容搜（同时搜最近 7 天原文和工作区笔记），不给就看最近几条；mode=open 看没做完的承诺和今天的安排，mode=archive 翻归档（要 query）；给 id 看这条记忆的出处（当时的原话 + 前后文）。对方提到人或旧事、问「你还记得吗」时先查再答。",
-      "parameters": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "query": {
-            "type": "string",
-            "description": "关键词就够"
-          },
-          "id": {
-            "type": "string",
-            "description": "看某条记忆的出处（传行首 8 位），会给出当时的原话和前后文"
-          },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "fact",
-              "self",
-              "episode",
-              "promise",
-              "note"
-            ],
-            "description": "只看某一类"
-          },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "search",
-              "recent",
-              "open",
-              "archive",
-              "voice"
-            ],
-            "description": "默认 search；voice = 给几句对方原话听语气"
-          },
-          "days": {
-            "type": "integer",
-            "description": "只看最近这么多天"
-          },
-          "limit": {
-            "type": "integer",
-            "description": "最多几条，默认 5"
-          }
-        },
-        "required": []
+      "description": "记忆类型"
+     },
+     "text": {
+      "type": "string",
+      "description": "内容，40-80 字"
+     },
+     "weight": {
+      "type": "number",
+      "description": "0-1，0.3 琐事 / 0.8 重要"
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
       },
-      "tags": [
-        "read"
+      "description": "最多 6 个"
+     },
+     "dueAt": {
+      "type": "string",
+      "description": "promise 用：ISO 或 YYYY-MM-DD HH:MM；没有截止时间写 none"
+     },
+     "closes": {
+      "type": "string",
+      "description": "要关掉的旧 id"
+     }
+    },
+    "required": [
+     "kind",
+     "text"
+    ]
+   },
+   "tags": [
+    "write"
+   ],
+   "summary": "写一条记忆卡片（事实/自己/经历/承诺/临时）。"
+  },
+  {
+   "name": "mcore_recall",
+   "description": "查记忆。给 query 按内容搜（同时搜最近 7 天原文和工作区笔记），不给就看最近几条；mode=open 看没做完的承诺和今天的安排，mode=archive 翻归档（要 query）；给 id 看这条记忆的出处（当时的原话 + 前后文）。对方提到人或旧事、问「你还记得吗」时先查再答。",
+   "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "关键词就够"
+     },
+     "id": {
+      "type": "string",
+      "description": "看某条记忆的出处（传行首 8 位），会给出当时的原话和前后文"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "fact",
+       "self",
+       "episode",
+       "promise",
+       "note"
       ],
-      "summary": "按内容或时间检索记忆，也能查最近 7 天的对话原文与未完成的承诺。"
-    },
-    {
-      "name": "mcore_state",
-      "description": "你自己的状态：精力、心情、在做什么、在哪、睡没睡。这是你自己的，不要念成清单给对方听。",
-      "parameters": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "get",
-              "update",
-              "rest"
-            ],
-            "description": "get 读 / update 改 / rest 睡"
-          },
-          "energy": {
-            "type": "number",
-            "description": "精力 0-100"
-          },
-          "mood": {
-            "type": "number",
-            "description": "心情 0-100"
-          },
-          "activity": {
-            "type": "string",
-            "description": "正在做什么"
-          },
-          "location": {
-            "type": "string",
-            "description": "在哪"
-          },
-          "sleeping": {
-            "type": "boolean",
-            "description": "在睡"
-          }
-        },
-        "required": [
-          "action"
-        ]
-      },
-      "tags": [
-        "read",
-        "write",
-        "snapshot"
+      "description": "只看某一类"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "search",
+       "recent",
+       "open",
+       "archive",
+       "voice"
       ],
-      "summary": "读写你自己的精力、心情、正在做什么、在哪。"
+      "description": "默认 search；voice = 给几句对方原话听语气"
+     },
+     "days": {
+      "type": "integer",
+      "description": "只看最近这么多天"
+     },
+     "limit": {
+      "type": "integer",
+      "description": "最多几条，默认 5"
+     }
     },
-    {
-      "name": "mcore_plan",
-      "description": "你今天的安排。日程是你开口的由头，不用讲给对方听。",
-      "parameters": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "list",
-              "add",
-              "done",
-              "clear"
-            ],
-            "description": "list 看 / add 加 / done 完成 / clear 清空"
-          },
-          "time": {
-            "type": "string",
-            "description": "add 用，HH:MM"
-          },
-          "title": {
-            "type": "string",
-            "description": "add 用，做什么"
-          },
-          "place": {
-            "type": "string",
-            "description": "add 用，在哪（可省）"
-          },
-          "id": {
-            "type": "string",
-            "description": "done 用，日程 id"
-          }
-        },
-        "required": [
-          "action"
-        ]
-      },
-      "tags": [
-        "read",
-        "write"
+    "required": []
+   },
+   "tags": [
+    "read"
+   ],
+   "summary": "按内容或时间检索记忆，也能查最近 7 天的对话原文与未完成的承诺。"
+  },
+  {
+   "name": "mcore_state",
+   "description": "你自己的状态：精力、心情、在做什么、在哪、睡没睡。这是你自己的，不要念成清单给对方听。",
+   "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "get",
+       "update",
+       "rest"
       ],
-      "summary": "安排今天的日程，作为主动开口的由头。"
-    }
-  ],
-  "events": [
-    {
-      "type": "mcore.wake",
-      "description": {
-        "zh": "主动开口的由头：从状态、未完成的承诺和日程里推出来的一小段理由，立即唤醒一轮。",
-        "en": "A reason to speak first, derived from state, open promises and today's plan."
-      },
-      "trigger": "flush"
+      "description": "get 读 / update 改 / rest 睡"
+     },
+     "energy": {
+      "type": "number",
+      "description": "精力 0-100"
+     },
+     "mood": {
+      "type": "number",
+      "description": "心情 0-100"
+     },
+     "activity": {
+      "type": "string",
+      "description": "正在做什么"
+     },
+     "location": {
+      "type": "string",
+      "description": "在哪"
+     },
+     "sleeping": {
+      "type": "boolean",
+      "description": "在睡"
+     }
     },
-    {
-      "type": "mcore.due",
-      "description": {
-        "zh": "答应过的事到点了，立即唤醒一轮提醒角色提一句。",
-        "en": "A promise came due; wakes a turn so the character can bring it up."
-      },
-      "trigger": "flush"
+    "required": [
+     "action"
+    ]
+   },
+   "tags": [
+    "read",
+    "write",
+    "snapshot"
+   ],
+   "summary": "读写你自己的精力、心情、正在做什么、在哪。"
+  },
+  {
+   "name": "mcore_plan",
+   "description": "你今天的安排。日程是你开口的由头，不用讲给对方听。",
+   "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "list",
+       "add",
+       "done",
+       "clear"
+      ],
+      "description": "list 看 / add 加 / done 完成 / clear 清空"
+     },
+     "time": {
+      "type": "string",
+      "description": "add 用，HH:MM"
+     },
+     "title": {
+      "type": "string",
+      "description": "add 用，做什么"
+     },
+     "place": {
+      "type": "string",
+      "description": "add 用，在哪（可省）"
+     },
+     "id": {
+      "type": "string",
+      "description": "done 用，日程 id"
+     }
     },
-    {
-      "type": "mcore.context",
-      "description": {
-        "zh": "当前状态一行字，随下一批投递；默认关闭，避免每轮多带 token。",
-        "en": "One line of current state, piggybacked. Off by default."
-      },
-      "trigger": "piggyback",
-      "tags": [
-        "snapshot"
-      ]
-    },
-    {
-      "type": "mcore.nightly",
-      "description": {
-        "zh": "夜间整理：唤醒一轮，让它把今天写成几条 episode（默认关闭）。",
-        "en": "Nightly consolidation turn (off by default)."
-      },
-      "trigger": "flush"
-    }
-  ],
-  "prompts": [
-    {
-      "key": "worlds.memory-core.envPrompt",
-      "title": "记忆核心 · 环境提示词",
-      "role": "envPrompt",
-      "content": "【记忆核心】\n\n你只有这一套记忆：`mcore_write` 写，`mcore_recall` 查。不要再提别的记忆系统，也不要问「记在哪」。\n\n写的时候：\n- 用你记得的样子写，别写字段：「她点奶茶永远三分糖」比「用户偏好：低糖」像人。\n- 能写成 `fact` 就别写 `episode`；`episode` 一天最多 2 条，只写会改变你怎么看她的事。\n- `self` 也装关系：他说话的习惯、什么语气让他舒服、你们之间的称呼和内部梗。\n- `promise` 没定时间先问；确实没有就写 `dueAt:\"none\"`。做完或改口传 `closes`（行首 8 位）。\n- 一条一件事，写清谁、何时、怎么了；同一件事不写两遍。\n- `tags` 两个词：主题 + 对方可能换的说法（「小黑盒」「发帖」），别写「日常」。\n\n查的时候：提到旧事、问「你还记得吗」，先查再答，别硬猜。\n\n状态和日程用 `mcore_state` / `mcore_plan`，别写进 `mcore_write`。\n\n分寸：记忆是记得的东西，不是拿来念的清单。可以自然地说「我记得你说过……」；不确定就问，别编。"
-    }
-  ]
+    "required": [
+     "action"
+    ]
+   },
+   "tags": [
+    "read",
+    "write"
+   ],
+   "summary": "安排今天的日程，作为主动开口的由头。"
+  }
+ ],
+ "events": [
+  {
+   "type": "mcore.wake",
+   "description": {
+    "zh": "主动开口的由头：从状态、未完成的承诺和日程里推出来的一小段理由，立即唤醒一轮。",
+    "en": "A reason to speak first, derived from state, open promises and today's plan."
+   },
+   "trigger": "flush"
+  },
+  {
+   "type": "mcore.due",
+   "description": {
+    "zh": "答应过的事到点了，立即唤醒一轮提醒角色提一句。",
+    "en": "A promise came due; wakes a turn so the character can bring it up."
+   },
+   "trigger": "flush"
+  },
+  {
+   "type": "mcore.context",
+   "description": {
+    "zh": "当前状态一行字，随下一批投递；默认关闭，避免每轮多带 token。",
+    "en": "One line of current state, piggybacked. Off by default."
+   },
+   "trigger": "piggyback",
+   "tags": [
+    "snapshot"
+   ]
+  },
+  {
+   "type": "mcore.nightly",
+   "description": {
+    "zh": "夜间整理：唤醒一轮，让它把今天写成几条 episode（默认关闭）。",
+    "en": "Nightly consolidation turn (off by default)."
+   },
+   "trigger": "flush"
+  }
+ ],
+ "prompts": [
+  {
+   "key": "worlds.memory-core.envPrompt",
+   "title": "记忆核心 · 环境提示词",
+   "role": "envPrompt",
+   "content": "【记忆核心】\n\n你只有这一套记忆：`mcore_write` 写，`mcore_recall` 查。不要再提别的记忆系统，也不要问「记在哪」。\n\n写的时候：\n- 用你记得的样子写，别写字段：「她点奶茶永远三分糖」比「用户偏好：低糖」像人。\n- 能写成 `fact` 就别写 `episode`；`episode` 一天最多 2 条，只写会改变你怎么看她的事。\n- `self` 也装关系：他说话的习惯、什么语气让他舒服、你们之间的称呼和内部梗。\n- `promise` 没定时间先问；确实没有就写 `dueAt:\"none\"`。做完或改口传 `closes`（行首 8 位）。\n- 一条一件事，写清谁、何时、怎么了；同一件事不写两遍。\n- `tags` 两个词：主题 + 对方可能换的说法（「小黑盒」「发帖」），别写「日常」。\n\n查的时候：提到旧事、问「你还记得吗」，先查再答，别硬猜。\n\n状态和日程用 `mcore_state` / `mcore_plan`，别写进 `mcore_write`。\n\n分寸：记忆是记得的东西，不是拿来念的清单。可以自然地说「我记得你说过……」；不确定就问，别编。"
+  }
+ ]
 }

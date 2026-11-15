@@ -177,6 +177,20 @@ export function maskSender(sender: string): string {
   return String(sender ?? '').replace(/\d{5,}/g, (digits) => `…${digits.slice(-4)}`);
 }
 
+/**
+ * 技术操作不该占回忆的位置。
+ *
+ * 「用那张图发了帖子 link_id 19602…」和「招待所有潮味」都是 episode、权重也差不多，
+ * 召回时按词面打分，前者那种罕见词反而更容易命中——工单把生活挤走了。
+ * 降成 note：细节不丢，只是不再参与预激活和主动想起。
+ */
+const TECH_SIGNAL = /\blink_id\b|\bimageFiles\b|\bDAILY_CAP\b|https?:\/\/|\b[A-Za-z]:\\\S|\b\w+\.(?:png|jpe?g|webp|gif|mp4)\b|HTTP\s*\d{3}|返回\s*\d{3}|\b\d{3}\s*(?:错误|报错)/i;
+
+export function demoteTech(kind: CardKind, text: string): CardKind {
+  if (kind !== 'episode') return kind;
+  return TECH_SIGNAL.test(text) ? 'note' : kind;
+}
+
 export class CardStore {
   private cards: Card[] = [];
   private readonly file: string;
@@ -343,10 +357,12 @@ export class CardStore {
   src?: { cursor: number; ts: string; text?: string };
   }): { card: Card; merged: boolean } {
     const text = String(input.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
+    // 模型写的才降噪；导入的历史数据原样保留，别偷偷改别人的记忆
+    const kind = input.source === 'tool' || !input.source ? demoteTech(input.kind, text) : input.kind;
     const key = normalizeText(text);
     if (key.length >= 6) {
       const near = this.cards.find(
-        (c) => c.kind === input.kind && c.status !== 'retired' && normalizeText(c.text) === key,
+        (c) => c.kind === kind && c.status !== 'retired' && normalizeText(c.text) === key,
       );
       if (near) {
         near.weight = Math.max(near.weight, clamp01(Number(input.weight ?? near.weight)));
@@ -360,7 +376,7 @@ export class CardStore {
     const now = new Date().toISOString();
     const card: Card = {
       id: randomUUID(),
-      kind: input.kind,
+      kind,
       text,
       weight: clamp01(Number(input.weight ?? 0.5)),
       tags: Array.isArray(input.tags) ? input.tags.map((t) => String(t).slice(0, 20)).slice(0, 6) : [],
@@ -372,7 +388,7 @@ export class CardStore {
       status: 'active',
       scope: String(input.scope ?? 'main').slice(0, 24),
       ...(input.dueAt ? { dueAt: input.dueAt } : {}),
-      ...(input.kind === 'promise' ? { done: false } : {}),
+      ...(kind === 'promise' ? { done: false } : {}),
       ...(input.src ? { src: input.src } : {}),
     };
     this.cards.push(card);
