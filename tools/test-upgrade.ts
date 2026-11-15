@@ -404,7 +404,10 @@ const ok = (cond: boolean, msg: string) => {
     state: { nightlyPending?: { day: string; text: string }; lastNightlyDay?: string };
     raw: RawLog;
   };
+  // 夜间整理只在过了 nightlyHour 之后跑，测试得显式构造那个时刻——
+  // 用 new Date() 的话，凌晨 0 点跑测试就会因为 0 < 1 直接返回，跟被测逻辑无关地挂掉
   const now = new Date();
+  now.setHours(2, 30, 0, 0);
   const iso = now.toISOString();
 
   // 只有两句：不整
@@ -848,6 +851,9 @@ const ok = (cond: boolean, msg: string) => {
   writeFileSync(join(saDir, 'thoughts.jsonl'), [
     JSON.stringify({ id: 'h1', ts: now, mode: 'doubt', text: '我一直在等的是一句准话', importance: 9, seeds: [] }),
     JSON.stringify({ id: 'h2', ts: now, mode: 'wonder', text: '这茶有点凉了', importance: 4, seeds: [] }),
+    // 坏数据：text 不是字符串，绝不该变成一张卡片
+    JSON.stringify({ id: 'bad', ts: now, mode: 'plan', text: { oops: 1 }, importance: 10, seeds: [] }),
+    JSON.stringify({ id: 'blank', ts: now, mode: 'plan', text: '   ', importance: 10, seeds: [] }),
   ].join('\n') + '\n', 'utf8');
 
   const world = new MemoryCoreWorld({
@@ -876,6 +882,8 @@ const ok = (cond: boolean, msg: string) => {
   internals.absorbThoughts(new Date());
   ok(store.active().filter((c) => c.kind === 'self').length === 1, '28) 再跑一次不重复收');
   ok((internals.state.absorbedThoughtIds ?? []).length === 1, '28) 只给收下的那条记 id');
+  ok(!store.active().some((c) => String(c.text).includes('object Object')), '28) 坏数据不会变成 [object Object] 卡片');
+  ok(store.active().length === 1, '28) 空字符串那条也没进库');
   await world.stop();
 }
 

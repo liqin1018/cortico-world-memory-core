@@ -1445,12 +1445,13 @@ export class MemoryCoreWorld implements World {
     const out: { id: string; ts: string; text: string; importance: number }[] = [];
     for (const line of lines) {
       try {
-        const t = JSON.parse(line) as { id?: string; ts?: string; text?: string; importance?: number };
-        if (!t.text) continue;
+        const t = JSON.parse(line) as { id?: string; ts?: string; text?: unknown; importance?: number };
+        // 同上：非字符串一律跳过，别让它变成一张「[object Object]」的卡片
+        if (typeof t.text !== 'string' || !t.text.trim()) continue;
         out.push({
           id: String(t.id ?? ''),
           ts: String(t.ts ?? ''),
-          text: String(t.text),
+          text: t.text,
           importance: Number(t.importance) || 0,
         });
       } catch {
