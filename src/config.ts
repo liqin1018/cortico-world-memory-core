@@ -104,6 +104,8 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   recallMaxChars: 600,
   recallUseAging: true,
   preactivateLines: 2,
+  /** 对方开口时，把「自我意识」插件独处时写下的那一句带进上下文。 */
+  shareSelfThought: true,
   chillAfterDays: 30,
   contextEveryMin: 0,
   nightlyConsolidate: true,
@@ -183,6 +185,12 @@ const RAW_GROUP: ConfigGroup = {
         title: '记忆',
         description: '关掉后不再读写卡片，已有记录仍留在数据目录。',
         'x-hot': true,
+      },
+      'worlds.memory-core.shareSelfThought': {
+        type: 'boolean',
+        title: '带上她独处时写下的话',
+        description: '对方开口时，把她一个人待着时写在本子上的一句带进上下文——会标明时间，也会说明「不一定是你现在的想法」。关掉就只是本地记录，永远不进对话。',
+        default: true,
       },
       'worlds.memory-core.captureTurns': {
         type: 'boolean',
@@ -285,6 +293,7 @@ const SETTINGS_ORDER = [
   'worlds.memory-core.siteEnabled',
   'worlds.memory-core.sitePort',
   'worlds.memory-core.preactivateLines',
+  'worlds.memory-core.shareSelfThought',
   'worlds.memory-core.captureTurns',
   'worlds.memory-core.captureAll',
   'worlds.memory-core.captureSenders',

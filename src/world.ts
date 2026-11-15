@@ -7,7 +7,7 @@
  *  2) 不每轮推送状态，只有 contextEveryMin>0 才推，默认 0；
  *  3) 主动开口有「对方最近说过话」这道闸，避免对着空房间调用模型。
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -1404,18 +1404,76 @@ export class MemoryCoreWorld implements World {
       })
       .slice(0, lines)
       .map((x) => x.card);
-    if (!picked.length) return;
+    // 她一个人待着时写下的那句：优先挑和这句话沾边的那条。
+    // 措辞是「写过」不是「想过」——那句话是另一次调用产出的，她并没有真的经历那个思考过程，
+    // 说成回忆就是在逼她认领一段不存在的经历。
+    const think = this.cfg().shareSelfThought === false ? null : this.pickSelfThought(now, turn.text);
+    if (!picked.length && !think) return;
 
     const tz = this.tz();
-    const body = picked.map((c) => `· ${clip(c.text, 60)}（${formatLocal(c.createdAt, tz).slice(5, 10)}）`).join('\n');
-    const ok = await this.push(
-      'mcore.prime',
-      `（你想起几件事（不是对方刚说的），合适就用，别当清单念：\n${body}）`,
-      'piggyback',
-    );
+    const parts: string[] = [];
+    if (think) {
+      const when = think.ts ? formatLocal(think.ts, tz).slice(11, 16) : '';
+      parts.push(`（${when ? `${when} ` : ''}你一个人时在本子上写过：${clip(think.text, 70)}——不一定是你现在的想法，看着用。）`);
+    }
+    if (picked.length) {
+      const body = picked.map((c) => `· ${clip(c.text, 60)}（${formatLocal(c.createdAt, tz).slice(5, 10)}）`).join('\n');
+      parts.push(`（你想起几件事（不是对方刚说的），合适就用，别当清单念：\n${body}）`);
+    }
+    const ok = await this.push('mcore.prime', parts.join('\n'), 'piggyback');
     if (!ok) return;
     this.primedFor = key;
-    this.store.prime(picked.map((c) => c.id));
+    if (picked.length) this.store.prime(picked.map((c) => c.id));
+    if (think) {
+      // 记下来，同一条想法只推一次；错过了就等她自己再想一条
+      this.state.lastSelfThoughtId = think.id;
+      this.save();
+    }
+  }
+
+  /**
+   * 从自我意识插件的 thoughts.jsonl 里挑一条。
+   * 选法：和对方刚说的话有词面重叠的优先，其次挑新鲜的；6 小时以外的不要。
+   * 没装那个插件就返回 null，不报错。
+   */
+  private pickSelfThought(now: Date, query: string): { id: string; text: string; ts: string } | null {
+    const file = join(this.dataDir, '..', 'self-awareness', 'thoughts.jsonl');
+    if (!existsSync(file)) return null;
+    let lines: string[] = [];
+    try {
+      lines = readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-20);
+    } catch {
+      return null;
+    }
+    if (!lines.length) return null;
+
+    const qTokens = new Set(tokenize(query).filter(isContentToken));
+    let best: { id: string; text: string; ts: string; score: number } | null = null;
+    for (const line of lines) {
+      let t: { id?: string; ts?: string; text?: string };
+      try {
+        t = JSON.parse(line) as typeof t;
+      } catch {
+        continue;
+      }
+      if (!t.text) continue;
+      const at = Date.parse(String(t.ts ?? ''));
+      if (!Number.isFinite(at)) continue;
+      // 2 小时：攒太久就过时了——那时候连「当时什么感觉」都不成立了
+      const ageH = (now.getTime() - at) / 3_600_000;
+      if (ageH > 2) continue;
+      if (t.id && t.id === this.state.lastSelfThoughtId) continue;
+      let hit = 0;
+      for (const tok of tokenize(String(t.text)).filter(isContentToken)) if (qTokens.has(tok)) hit += 1;
+      // 一句都不沾边就别硬塞：问「帖子怎么样」却答「我想起你说的错字」，比不想还怪。
+      // 唯一的例外是刚想的（半小时内）——那确实还在脑子里，冒出来是自然的。
+      if (hit === 0 && ageH > 0.5) continue;
+      const score = hit * 2 + Math.max(0, 1 - ageH / 2);
+      if (!best || score > best.score) {
+        best = { id: String(t.id ?? ''), text: String(t.text), ts: String(t.ts ?? ''), score };
+      }
+    }
+    return best ? { id: best.id, text: best.text, ts: best.ts } : null;
   }
 
   private async maybeRemind(now: Date): Promise<void> {
@@ -1548,7 +1606,7 @@ export class MemoryCoreWorld implements World {
     }
     const ok = await this.push(
       'mcore.nightly',
-      `（昨天留下的这些，顺手整理一下：最多写 3 条；能写成 fact 就别写成 episode；有承诺就带 dueAt；库里已有的别重复。\n${pending.text}）`,
+      `（昨天留下的这些，你翻一下：记过的不用再记，漏了的补一条就行，不用凑数。规矩不变：能写成 fact 就别写成 episode，有承诺就带 dueAt。\n${pending.text}）`,
       'piggyback',
     );
     if (!ok) return;

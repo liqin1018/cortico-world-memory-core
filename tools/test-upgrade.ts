@@ -2,7 +2,7 @@
  * 0.4.0 的回归：原子写与备份、导入、承诺闭环、体检。
  * 跑法：node --experimental-transform-types tools/test-upgrade.ts
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -427,7 +427,8 @@ const ok = (cond: boolean, msg: string) => {
 
   await internals.deliverNightly();
   ok(pushed.length === 1 && pushed[0].type === 'mcore.nightly', '15) 下次开口时交付');
-  ok(String(pushed[0]?.text ?? '').includes('最多写 3 条'), '15) 交付内容带「最多 3 条」的硬约束');
+  ok(String(pushed[0]?.text ?? '').includes('不用凑数'), '15) 交付时不逼产出（记过的不用再记，不用凑数）');
+  ok(!String(pushed[0]?.text ?? '').includes('最多写 3 条'), '15) 去掉了「最多写 3 条」这种数量压力');
   ok(!internals.state.nightlyPending, '15) 交付后清掉备料');
 
   await internals.deliverNightly();
@@ -725,6 +726,117 @@ const ok = (cond: boolean, msg: string) => {
   ok(h.recent.byKind.fact === 1, '25) 只算 7 天内的（旧事实不算）');
   ok(h.recent.byKind.episode === 1, '25) 经历分开计数');
   await world.stop();
+}
+
+/* 26) 沉淀：自我意识想的东西能进预激活，同一条只推一次 */
+{
+  const dataDir = mkdtempSync(join(tmpdir(), 'mcore-selfthink-'));
+  const saDir = join(dataDir, 'self-awareness');
+  mkdirSync(saDir, { recursive: true });
+  const thoughtTs = new Date(Date.now() - 30 * 60_000).toISOString();
+  writeFileSync(join(saDir, 'thoughts.jsonl'), [
+    JSON.stringify({ id: 't1aaaaaa', ts: thoughtTs, mode: 'wonder', text: '小黑盒那篇帖子他到底满不满意，也没说', importance: 6, seeds: [] }),
+  ].join('\n') + '\n', 'utf8');
+
+  const pushed: string[] = [];
+  const host = {
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    store: { range: () => [] },
+    pushEvent: async (e: { text?: string }) => {
+      pushed.push(String(e.text ?? ''));
+      return true;
+    },
+  };
+  const world = new MemoryCoreWorld({
+    cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true },
+    dataDir,
+    timezone: 'Asia/Shanghai',
+    botDir: dataDir,
+  } as never);
+  await world.start(host as never);
+
+  const store = (world as unknown as { store: CardStore }).store;
+  store.add({ kind: 'episode', text: '今天在小黑盒发了一篇讲旅行的帖', weight: 0.5 });
+  const internals = world as unknown as {
+    lastTurn: { at: number; text: string; cursor: number };
+    state: { lastSelfThoughtId?: string };
+    primedFor: string;
+    maybePreactivate(now: Date): Promise<void>;
+  };
+  internals.lastTurn = { at: Date.now() - 30_000, text: '小黑盒那篇帖子你觉得怎么样', cursor: 99 };
+
+  await internals.maybePreactivate(new Date());
+  const first = pushed.join('\n');
+  ok(first.includes('你一个人时在本子上写过'), '26) 想法被带进预激活');
+  ok(first.includes('不一定是你现在的想法'), '26) 明确标了「不一定是你现在的想法」');
+  ok(/（\d{2}:\d{2} 你一个人时/.test(first), '26) 带上了写下那句话的时间');
+  ok(first.includes('也没说'), '26) 带的是那条想法的正文');
+  ok(internals.state.lastSelfThoughtId === 't1aaaaaa', '26) 记住了已经推过哪条');
+
+  // 换一轮对话，同一条想法不该再推
+  pushed.length = 0;
+  internals.primedFor = '';
+  internals.lastTurn = { at: Date.now() - 20_000, text: '那换个话题，晚饭吃啥', cursor: 100 };
+  await internals.maybePreactivate(new Date());
+  ok(!pushed.join('\n').includes('也没说'), '26) 同一条想法不重复推');
+
+  // 换一句完全不沾边的话题：陈旧的想法不该硬塞进来
+  pushed.length = 0;
+  internals.primedFor = '';
+  internals.state.lastSelfThoughtId = undefined;
+  internals.lastTurn = { at: Date.now() - 10_000, text: '明天天气怎么样', cursor: 101 };
+  await internals.maybePreactivate(new Date());
+  ok(!pushed.join('\n').includes('也没说'), '26) 不沾边的旧想法不硬塞');
+  await world.stop();
+}
+
+/* 27) 只带 2 小时内的；开关关掉就一条都不带 */
+{
+  const build = async (ageHours: number, share: boolean) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'mcore-stw-'));
+    const saDir = join(dataDir, 'self-awareness');
+    mkdirSync(saDir, { recursive: true });
+    writeFileSync(join(saDir, 'thoughts.jsonl'), [
+      JSON.stringify({
+        id: 'z9', ts: new Date(Date.now() - ageHours * 3_600_000).toISOString(),
+        mode: 'wonder', text: '小黑盒那篇帖子他到底满不满意', importance: 5, seeds: [],
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    const pushed: string[] = [];
+    const host = {
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+      store: { range: () => [] },
+      pushEvent: async (e: { text?: string }) => { pushed.push(String(e.text ?? '')); return true; },
+    };
+    const world = new MemoryCoreWorld({
+      cfg: { ...MEMORY_CORE_DEFAULTS, enabled: true, siteEnabled: false, memoryEnabled: true, shareSelfThought: share },
+      dataDir,
+      timezone: 'Asia/Shanghai',
+      botDir: dataDir,
+    } as never);
+    await world.start(host as never);
+    (world as unknown as { store: CardStore }).store
+      .add({ kind: 'episode', text: '今天在小黑盒发了一篇帖', weight: 0.5 });
+    const internals = world as unknown as {
+      lastTurn: { at: number; text: string; cursor: number };
+      primedFor: string;
+      maybePreactivate(now: Date): Promise<void>;
+    };
+    internals.lastTurn = { at: Date.now() - 20_000, text: '小黑盒那篇帖子怎么样', cursor: 700 };
+    await internals.maybePreactivate(new Date());
+    await world.stop();
+    return pushed.join('\n');
+  };
+
+  const fresh = await build(1, true);
+  ok(fresh.includes('本子上写过'), '27) 1 小时前的想法会带进去');
+
+  const stale = await build(3, true);
+  ok(!stale.includes('本子上写过'), '27) 3 小时前的想法不带了（窗口 2 小时）');
+
+  const off = await build(1, false);
+  ok(!off.includes('本子上写过'), '27) 开关关掉后一条都不带');
 }
 
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');
