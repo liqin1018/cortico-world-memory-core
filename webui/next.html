@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/next.css" />
 </head>
 <body>
+<div class="rail-sign" aria-hidden="true">NEURAL ARCHIVE</div>
 <div class="next-app">
   <header class="next-topbar">
     <div class="next-brand">
@@ -32,6 +33,7 @@
       <span class="node-status"><i></i><span>CORE ONLINE</span></span>
       <button id="btn-new" class="next-btn primary">＋ 新记忆</button>
       <button id="btn-refresh" class="next-icon" title="刷新" aria-label="刷新">↻</button>
+      <button id="btn-bg" class="next-icon" title="背景与氛围" aria-label="背景与氛围">▤</button>
       <button id="btn-theme" class="next-icon" title="切换主题" aria-label="切换主题">◐</button>
       <button id="btn-more" class="next-icon" title="更多" aria-label="更多">⋯</button>
     </div>
@@ -87,5 +89,6 @@
 <div class="modal" id="modal" hidden><div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header><h2 id="modal-title">新建记忆</h2><button class="next-icon" id="modal-close" aria-label="关闭">×</button></header><div class="modal-body" id="modal-body"></div><footer id="modal-foot"></footer></div></div>
 <div class="toast" id="toast" hidden></div><div class="menu" id="menu" hidden></div>
 <script src="/app.js" type="module"></script>
+<script src="/next.js" type="module"></script>
 </body>
 </html>

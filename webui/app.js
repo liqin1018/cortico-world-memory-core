@@ -999,6 +999,15 @@ const GALAXY_COLOR = { fact: '#72f4dc', self: '#a997ff', episode: '#ffd18a', pro
 /** 攒够 3 张就独立成团的标签，可以有自己的颜色。色相要和它的 kind 拉开，一眼能分。 */
 const GALAXY_TAG_COLOR = { 独处: '#c9a2ff' };
 const GALAXY_CAM = 1900;
+/** 旋臂薄雾的色号：必须覆盖 buildScene 里所有 arm.tone，否则那一层会被跳过。 */
+const HAZE_TONES = [
+  '255,236,198',
+  '255,238,205',
+  '34,230,255',
+  '255,64,128',
+  '255,120,170',
+  '150,120,255',
+];
 
 /** 固定种子：同一批卡片每次布出来的星系一样。 */
 function seeded(seed) {
@@ -1195,11 +1204,15 @@ class Galaxy {
     this.buildScene();
   }
 
-  /** 柔光贴图：节点 5 种类型各一张，旋臂薄雾再各一张。 */
+  /**
+   * 柔光贴图：节点 5 种类型各一张，旋臂薄雾再各一张。
+   * 薄雾的色号必须和 buildScene 里 arms 的 tone 一一对上——对不上就取不到贴图，
+   * 整层薄雾会被静默跳过（看起来就像旋臂只剩下一圈圈散点）。
+   */
   buildSprites() {
     this.glow.clear();
     this.hazeSprites = new Map();
-    for (const tone of ['255,238,205', '150,225,255', '195,170,255']) {
+    for (const tone of HAZE_TONES) {
       const size = 128;
       const cv = document.createElement('canvas');
       cv.width = size;
@@ -1366,10 +1379,10 @@ class Galaxy {
     // 星系尘埃：散点按密度自然堆出旋臂，不画「虚线螺旋」
     this.dust = [];
     const arms = [
-      { base: -0.18, tone: '105,225,255', n: 1850, twist: Math.PI * 2.42 },
-      { base: Math.PI * 0.5 - 0.18, tone: '190,155,255', n: 1850, twist: Math.PI * 2.42 },
-      { base: Math.PI - 0.18, tone: '255,205,150', n: 1850, twist: Math.PI * 2.42 },
-      { base: Math.PI * 1.5 - 0.18, tone: '110,235,205', n: 1850, twist: Math.PI * 2.42 },
+      { base: -0.18, tone: '255,64,128', n: 1850, twist: Math.PI * 2.42 },
+      { base: Math.PI * 0.5 - 0.18, tone: '34,230,255', n: 1850, twist: Math.PI * 2.42 },
+      { base: Math.PI - 0.18, tone: '255,120,170', n: 1850, twist: Math.PI * 2.42 },
+      { base: Math.PI * 1.5 - 0.18, tone: '150,120,255', n: 1850, twist: Math.PI * 2.42 },
     ];
     for (const arm of arms) {
       for (let i = 0; i < arm.n; i += 1) {
@@ -1411,6 +1424,26 @@ class Galaxy {
         const r = RCORE * 0.7 + s * RMAX * 1.08 + gauss() * (4 + s * 12);
         const t = arm.base + arm.twist * s + gauss() * 0.035;
         this.clusters.push({ x: Math.cos(t) * r, y: Math.sin(t) * r, z: gauss() * RMAX * 0.035, tone: arm.tone, size: 0.7 + rnd() * 1.6, alpha: 0.35 + rnd() * 0.5, phase: rnd() * Math.PI * 2 });
+      }
+    }
+
+    // 旋臂薄雾：沿臂铺很淡的柔光，把散点连成气态盘面。
+    // 少了这一层，旋臂就只剩一串点，看起来像同心圆而不是银河。
+    this.haze = [];
+    for (const arm of arms) {
+      const steps = 44;
+      for (let i = 0; i < steps; i += 1) {
+        const s0 = (i + 0.5) / steps;
+        const r = RCORE * 0.5 + s0 * RMAX * 1.12;
+        const t = arm.base + arm.twist * s0;
+        this.haze.push({
+          x: Math.cos(t) * r + gauss() * 4,
+          y: Math.sin(t) * r + gauss() * 4,
+          z: gauss() * RMAX * 0.02,
+          radius: RMAX * (0.055 + 0.08 * s0),
+          color: s0 < 0.3 ? '255,236,198' : arm.tone,
+          alpha: (0.05 + 0.025 * Math.sin(s0 * 11)) * (1 - s0 * 0.22),
+        });
       }
     }
 
@@ -1567,22 +1600,6 @@ class Galaxy {
       ctx.beginPath();
       ctx.arc(core.x, core.y, Math.max(2.5, this.RCORE * 0.12 * core.k), 0, Math.PI * 2);
       ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    // 旋臂薄雾：柔光贴图叠出来的连续感，不是一个个硬圆
-    if (this.haze?.length) {
-      ctx.globalCompositeOperation = 'lighter';
-      for (const h of this.haze) {
-        const p = this.project(h.x, h.y, h.z);
-        if (!p) continue;
-        const sprite = this.hazeSprites?.get(h.color);
-        if (!sprite) continue;
-        const r = h.radius * p.k * 2.2;
-        ctx.globalAlpha = h.alpha * 2.4;
-        ctx.drawImage(sprite, p.x - r, p.y - r, r * 2, r * 2);
-      }
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
     }
