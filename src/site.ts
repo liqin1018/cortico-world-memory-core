@@ -190,6 +190,12 @@ export class MemorySite {
 
     if (path.startsWith('/api/')) return this.api(req, rsp, url, path);
 
+    // 原页面和新版页面共用同一个本地站点与令牌，方便并排对比。
+    if (path === '/next' || path === '/next/') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return this.text(rsp, 405, 'method not allowed');
+      return this.sendFile(rsp, 'next.html');
+    }
+
     // 无域名、无认证：只服务本机，禁止被 iframe 之外的地方引用
     if (req.method !== 'GET' && req.method !== 'HEAD') return this.text(rsp, 405, 'method not allowed');
     const file = path === '/' ? 'index.html' : path.replace(/^\/+/, '');
@@ -365,7 +371,7 @@ export class MemorySite {
       const type = MIME[extname(full).toLowerCase()] ?? 'application/octet-stream';
       // 首页注入一次性令牌：app.js 把它放进每个写请求的头里。
       // 这份 HTML 不进缓存，否则进程重启后旧令牌会让所有写操作 403。
-      if (safe === 'index.html') {
+      if (safe === 'index.html' || safe === 'next.html') {
         const html = body
           .toString('utf8')
           .replace('<head>', `<head>\n<meta name="mcore-token" content="${this.token}">`);

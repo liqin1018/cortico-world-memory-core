@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN" data-mode="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>记忆核心 · 新版星系</title>
+<link rel="stylesheet" href="/next.css" />
+</head>
+<body>
+<div class="next-app">
+  <header class="next-topbar">
+    <div class="next-brand">
+      <span class="core-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <div class="next-brand-copy"><strong>记忆核心</strong><span id="brand-sub">NEURAL MEMORY CORE / LOCAL NODE</span></div>
+    </div>
+    <div class="next-search" role="search">
+      <span class="search-icon">⌕</span>
+      <input id="search" type="search" placeholder="搜索记忆、对话、文件…" autocomplete="off" spellcheck="false" />
+      <span class="search-key">/</span>
+      <button id="search-clear" class="next-icon" title="清空搜索" aria-label="清空搜索" hidden>×</button>
+    </div>
+    <nav class="tab next-tabs" id="tabs" role="tablist" aria-label="视图">
+      <button role="tab" data-view="galaxy" data-letter="星" class="tab next-tab active" title="星图"><span>星图</span></button>
+      <button role="tab" data-view="graph" data-letter="图" class="tab next-tab" title="图谱"><span>图谱</span></button>
+      <button role="tab" data-view="timeline" data-letter="线" class="tab next-tab" title="时间线"><span>时间线</span></button>
+      <button role="tab" data-view="table" data-letter="表" class="tab next-tab" title="列表"><span>列表</span></button>
+      <button role="tab" data-view="turns" data-letter="文" class="tab next-tab" title="对话原文"><span>原文</span></button>
+      <button role="tab" data-view="docs" data-letter="件" class="tab next-tab" title="工作区文件"><span>文件</span></button>
+      <button role="tab" data-view="health" data-letter="检" class="tab next-tab" title="体检"><span>体检</span></button>
+    </nav>
+    <div class="next-actions">
+      <span class="node-status"><i></i><span>CORE ONLINE</span></span>
+      <button id="btn-new" class="next-btn primary">＋ 新记忆</button>
+      <button id="btn-refresh" class="next-icon" title="刷新" aria-label="刷新">↻</button>
+      <button id="btn-theme" class="next-icon" title="切换主题" aria-label="切换主题">◐</button>
+      <button id="btn-more" class="next-icon" title="更多" aria-label="更多">⋯</button>
+    </div>
+  </header>
+
+  <section class="next-metrics" id="metrics" aria-label="记忆核心概览"></section>
+
+  <main class="next-workspace">
+    <aside class="next-rail" id="rail" aria-label="记忆索引"></aside>
+    <section class="next-stage" id="stage">
+      <div class="view" id="view-graph">
+        <canvas id="graph"></canvas>
+        <div class="graph-hud">
+          <div class="legend" id="graph-legend"></div>
+          <div class="hud-actions">
+            <button class="chip-btn" id="graph-fit" title="适应窗口">适应</button>
+            <button class="chip-btn" id="graph-relayout" title="重新布局">重排</button>
+            <button class="chip-btn" id="graph-stars" title="星图 / 图谱">星图</button>
+            <label class="switch"><input type="checkbox" id="graph-labels" checked /><span>标签</span></label>
+          </div>
+        </div>
+        <div class="empty" id="graph-empty" hidden><p>还没有记忆。</p><p class="dim">聊几句，或者点右上角「＋ 新记忆」。</p></div>
+      </div>
+      <div class="view" id="view-timeline" hidden></div>
+      <div class="view" id="view-table" hidden></div>
+      <div class="view" id="view-turns" hidden></div>
+      <div class="view" id="view-docs" hidden></div>
+      <div class="view" id="view-health" hidden></div>
+      <div class="view" id="view-galaxy" hidden>
+        <div class="galaxy-wrap">
+          <canvas id="galaxy"></canvas>
+          <div class="galaxy-scan"></div>
+          <div class="galaxy-hud"><b>记忆星图</b><span>亮度 = 最近被想起　大小 = 权重　光团 = 主题</span></div>
+          <div class="galaxy-telemetry" id="galaxy-telemetry">ROT 000° · PITCH 0° · ZOOM 1.00×</div>
+          <div class="galaxy-legend" id="galaxy-legend"></div>
+          <div class="galaxy-hint">拖动旋转 · 滚轮缩放 · 双击复位</div>
+          <div class="galaxy-empty" id="galaxy-empty" hidden>还没有记忆，聊几句再回来。</div>
+        </div>
+      </div>
+    </section>
+    <aside class="next-inspector" id="inspector" aria-label="记忆详情">
+      <button class="insp-stub" id="insp-stub" title="展开右栏" aria-label="展开右栏"><span class="stub-chev">‹</span><span class="stub-label">概览</span><span class="stub-count" id="stub-count">0</span></button>
+      <div class="insp-body" id="insp-body"></div>
+    </aside>
+  </main>
+
+  <footer class="next-statusbar">
+    <span id="status-count">—</span><span class="sep"></span><span id="status-site" class="dim"></span><span class="grow"></span>
+    <span class="next-caption">MEMORY CORE / 记忆正在沉淀、连接、被唤醒</span>
+    <span class="kbd-hints"><kbd>/</kbd> 搜 <kbd>J</kbd><kbd>K</kbd> 移动 <kbd>Enter</kbd> 打开 <kbd>I</kbd> 右栏</span>
+  </footer>
+</div>
+<div class="modal" id="modal" hidden><div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header><h2 id="modal-title">新建记忆</h2><button class="next-icon" id="modal-close" aria-label="关闭">×</button></header><div class="modal-body" id="modal-body"></div><footer id="modal-foot"></footer></div></div>
+<div class="toast" id="toast" hidden></div><div class="menu" id="menu" hidden></div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

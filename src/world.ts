@@ -283,7 +283,10 @@ export class MemoryCoreWorld implements World {
       ],
       config: [MEMORY_CORE_CONFIG_GROUP],
       links: this.siteOrigin
-        ? [{ label: '记忆地图 · 图谱与时间线', href: this.siteOrigin, inheritTheme: true }]
+        ? [
+            { label: '记忆地图 · 图谱与时间线', href: this.siteOrigin, inheritTheme: true },
+            { label: '记忆核心 · 新版星系', href: `${this.siteOrigin}/next`, inheritTheme: true },
+          ]
         : [],
       storage: [
         {

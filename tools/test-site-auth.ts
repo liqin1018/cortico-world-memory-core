@@ -75,11 +75,20 @@ const token = /name="mcore-token" content="([^"]+)"/.exec(home.body)?.[1] ?? '';
 ok(home.status === 200 && token.length > 10, '1) 首页注入了令牌');
 ok(home.body.includes('mcore-token'), '1) meta 标签在 HTML 里');
 
+/* 1.1) 新版入口与旧页面共用站点令牌 */
+const next = await call('GET', '/next');
+const nextToken = /name="mcore-token" content="([^"]+)"/.exec(next.body)?.[1] ?? '';
+ok(next.status === 200, `1.1) 新版入口可访问（${next.status}）`);
+ok(next.body.includes('记忆核心 · 新版星系'), '1.1) 新版页面标题正确');
+ok(nextToken.length > 10 && nextToken === token, '1.1) 新版页面复用同一令牌');
+
 /* 2) Host 白名单 */
 const evilHost = await call('GET', '/api/snapshot', { headers: { host: 'evil.example' } });
 ok(evilHost.status === 403, `2) Host: evil.example 被拒（${evilHost.status}）`);
 const evilHome = await call('GET', '/', { headers: { host: 'evil.example' } });
 ok(evilHome.status === 403, `2) 伪造 Host 连首页都拿不到令牌（${evilHome.status}）`);
+const evilNext = await call('GET', '/next', { headers: { host: 'evil.example' } });
+ok(evilNext.status === 403, `2) 伪造 Host 不能访问新版入口（${evilNext.status}）`);
 const localhostHost = await call('GET', '/api/snapshot', { headers: { host: `localhost:${port}` } });
 ok(localhostHost.status === 200, '2) localhost 放行');
 
@@ -107,6 +116,13 @@ const snap = await call('GET', '/api/snapshot');
 ok(snap.status === 200, '4) GET 不需要令牌');
 const exp = await call('GET', '/api/export?fmt=json');
 ok(exp.status === 200 && exp.body === 'x', '4) 导出链接照常能下');
+
+/* 5) 新版页面注入的令牌也能执行写操作 */
+const nextWrite = await call('POST', '/api/cards', {
+  headers: { 'content-type': 'application/json', 'x-mcore-token': nextToken },
+  body: '{"kind":"fact","text":"新版入口写入"}',
+});
+ok(nextWrite.status === 201 && created === 2, `5) 新版页面令牌可写入（${nextWrite.status}）`);
 
 await site.stop();
 console.log(bad ? `\n${bad} 项失败` : '\n全部通过');

@@ -11,7 +11,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const app = readFileSync(join(root, 'webui', 'app.js'), 'utf8');
-const html = readFileSync(join(root, 'webui', 'index.html'), 'utf8');
+const pages = ['index.html', 'next.html'].map((name) => ({
+  name,
+  html: readFileSync(join(root, 'webui', name), 'utf8'),
+}));
 const site = readFileSync(join(root, 'src', 'site.ts'), 'utf8');
 // 源码里的路由正则写成 \/api\/turns\/，比对前先把转义去掉
 const sitePlain = site.split('\\/').join('/');
@@ -23,14 +26,24 @@ const fail = (msg: string) => {
 };
 
 /* 1) DOM id */
-const htmlIds = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
 const used = new Set<string>();
 for (const m of app.matchAll(/\$\('#([A-Za-z0-9_-]+)'\)/g)) used.add(m[1]);
 for (const m of app.matchAll(/querySelector\('#([A-Za-z0-9_-]+)'\)/g)) used.add(m[1]);
 for (const m of app.matchAll(/getElementById\('([A-Za-z0-9_-]+)'\)/g)) used.add(m[1]);
-const missingIds = [...used].filter((id) => !htmlIds.has(id) && !app.includes(`id="${id}"`));
-if (missingIds.length) fail(`app.js 引用了不存在的元素：${missingIds.join('、')}`);
-else console.log(`OK   DOM：${used.size} 个 id 引用全部存在`);
+for (const { name, html } of pages) {
+  const ids = [...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
+  const htmlIds = new Set(ids);
+  const missingIds = [...used].filter((id) => !htmlIds.has(id) && !app.includes(`id="${id}"`));
+  if (missingIds.length) fail(`${name}：app.js 引用了不存在的元素：${missingIds.join('、')}`);
+  else console.log(`OK   DOM ${name}：${used.size} 个 id 引用全部存在`);
+  if (ids.length !== htmlIds.size) fail(`${name}：存在重复 DOM id`);
+  // app.js 的视图按钮必须同时具备 #tabs、.tab 和 data-view，缺一个就绑定不到事件。
+  const viewButtons = [...html.matchAll(/<button\b[^>]*data-view="([^"]+)"[^>]*>/g)];
+  const views = ['galaxy', 'graph', 'timeline', 'table', 'turns', 'docs', 'health'];
+  if (!views.every((view) => viewButtons.some((m) => m[1] === view && /class="[^"]*\btab\b/.test(m[0])))) {
+    fail(`${name}：视图按钮缺失或没有 .tab 类`);
+  }
+}
 
 /* 2) S 上的属性 */
 const sBlock = /const S = \{([\s\S]*?)\n\};/.exec(app)?.[1] ?? '';

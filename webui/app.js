@@ -995,7 +995,7 @@ class Graph {
 /* ── 记忆星图（3D） ─────────────────────────────────── */
 
 const GALAXY_KIND = { fact: '事实', self: '自己', episode: '经历', promise: '承诺', note: '临时' };
-const GALAXY_COLOR = { fact: '#8ef0dc', self: '#9ab8ff', episode: '#ffc078', promise: '#ff9ec4', note: '#c3ccd8' };
+const GALAXY_COLOR = { fact: '#72f4dc', self: '#a997ff', episode: '#ffd18a', promise: '#ff9fc9', note: '#b9d3e8' };
 /** 攒够 3 张就独立成团的标签，可以有自己的颜色。色相要和它的 kind 拉开，一眼能分。 */
 const GALAXY_TAG_COLOR = { 独处: '#c9a2ff' };
 const GALAXY_CAM = 1900;
@@ -1033,6 +1033,8 @@ class Galaxy {
     this.links = [];
     this.regions = [];
     this.dust = [];
+    this.armTrails = [];
+    this.clusters = [];
     this.far = [];
     this.glow = new Map();
     this.hover = null;
@@ -1234,8 +1236,8 @@ class Galaxy {
     const H = this.h;
     this.CX = W * 0.5;
     this.CY = H * 0.52;
-    this.RCORE = Math.min(W, H) * 0.1;
-    this.RMAX = Math.min(W, H) * 0.4;
+    this.RCORE = Math.min(W, H) * 0.125;
+    this.RMAX = Math.min(W, H) * 0.46;
     const RMAX = this.RMAX;
     const RCORE = this.RCORE;
     const rnd = seeded(20261105);
@@ -1364,16 +1366,17 @@ class Galaxy {
     // 星系尘埃：散点按密度自然堆出旋臂，不画「虚线螺旋」
     this.dust = [];
     const arms = [
-      { base: 0, tone: '150,225,255', n: 2200 },
-      { base: Math.PI, tone: '195,170,255', n: 2200 },
-      { base: Math.PI * 0.55, tone: '255,225,190', n: 800 },
+      { base: -0.18, tone: '105,225,255', n: 1850, twist: Math.PI * 2.42 },
+      { base: Math.PI * 0.5 - 0.18, tone: '190,155,255', n: 1850, twist: Math.PI * 2.42 },
+      { base: Math.PI - 0.18, tone: '255,205,150', n: 1850, twist: Math.PI * 2.42 },
+      { base: Math.PI * 1.5 - 0.18, tone: '110,235,205', n: 1850, twist: Math.PI * 2.42 },
     ];
     for (const arm of arms) {
       for (let i = 0; i < arm.n; i += 1) {
         const s = Math.pow(rnd(), 0.75);
         const r = RCORE * 0.55 + s * RMAX * 1.1;
-        const t = arm.base + 2.15 * Math.PI * s + gauss() * (0.03 + 0.085 * s);
-        const rr = r + gauss() * (10 + 42 * s);
+        const t = arm.base + arm.twist * s + gauss() * (0.03 + 0.085 * s);
+        const rr = r + gauss() * (9 + 38 * s);
         // 沿弧长做亮度起伏，看起来有「结」和「空洞」
         const knot = 0.5 + 0.5 * Math.sin(s * 19 + arm.base * 3);
         const faint = arm.n === 800 ? 0.55 : 1;
@@ -1383,46 +1386,31 @@ class Galaxy {
           z: gauss() * RMAX * 0.05,
           size: 0.5 + Math.pow(rnd(), 2) * 1.7,
           alpha: (0.12 + rnd() * 0.24) * knot * (1 - s * 0.3) * faint,
-          color: s < 0.22 ? '255,238,205' : arm.tone,
+          color: s < 0.2 ? '255,238,205' : arm.tone,
         });
       }
     }
 
-    // 旋臂薄雾：几十个大而极淡的圆，把散点连成一片
-    this.haze = [];
-    for (const arm of arms) {
-      const steps = arm.n === 800 ? 16 : 30;
-      for (let i = 0; i < steps; i += 1) {
-        const s0 = (i + 0.5) / steps;
-        const r = RCORE * 0.55 + s0 * RMAX * 1.1;
-        const t = arm.base + 2.15 * Math.PI * s0;
-        this.haze.push({
-          x: Math.cos(t) * r,
-          y: Math.sin(t) * r,
-          z: 0,
-          radius: RMAX * (0.05 + 0.05 * s0),
-          color: s0 < 0.22 ? '255,238,205' : arm.tone,
-          alpha: 0.035 * (arm.n === 800 ? 0.6 : 1) * (1 - s0 * 0.25),
-        });
+    // 清晰但很淡的旋臂骨架：让星尘形成真正的银河结构，而不是一团竖直光柱。
+    this.armTrails = arms.map((arm) => {
+      const points = [];
+      for (let i = 0; i <= 96; i += 1) {
+        const s = i / 96;
+        const r = RCORE * 0.62 + s * RMAX * 1.1;
+        const t = arm.base + arm.twist * s;
+        points.push({ x: Math.cos(t) * r, y: Math.sin(t) * r, z: gauss() * RMAX * 0.018 });
       }
-    }
+      return { points, tone: arm.tone };
+    });
 
-    // 旋臂薄雾：几十个大而极淡的圆，把散点连成一片
-    this.haze = [];
+    // 亮星团：沿旋臂布置少量高亮节点，形成照片般的“恒星育婴室”。
+    this.clusters = [];
     for (const arm of arms) {
-      const steps = arm.n === 800 ? 16 : 30;
-      for (let i = 0; i < steps; i += 1) {
-        const s0 = (i + 0.5) / steps;
-        const r = RCORE * 0.55 + s0 * RMAX * 1.1;
-        const t = arm.base + 2.15 * Math.PI * s0;
-        this.haze.push({
-          x: Math.cos(t) * r,
-          y: Math.sin(t) * r,
-          z: 0,
-          radius: RMAX * (0.05 + 0.05 * s0),
-          color: s0 < 0.22 ? '255,238,205' : arm.tone,
-          alpha: 0.035 * (arm.n === 800 ? 0.6 : 1) * (1 - s0 * 0.25),
-        });
+      for (let i = 0; i < 42; i += 1) {
+        const s = 0.08 + rnd() * 0.9;
+        const r = RCORE * 0.7 + s * RMAX * 1.08 + gauss() * (4 + s * 12);
+        const t = arm.base + arm.twist * s + gauss() * 0.035;
+        this.clusters.push({ x: Math.cos(t) * r, y: Math.sin(t) * r, z: gauss() * RMAX * 0.035, tone: arm.tone, size: 0.7 + rnd() * 1.6, alpha: 0.35 + rnd() * 0.5, phase: rnd() * Math.PI * 2 });
       }
     }
 
@@ -1490,13 +1478,32 @@ class Galaxy {
     if (!ctx) return;
     ctx.clearRect(0, 0, W, H);
 
-    // 深空底
-    const bg = ctx.createRadialGradient(this.CX, this.CY, 0, this.CX, this.CY, Math.max(W, H) * 0.75);
-    bg.addColorStop(0, '#0a0e1c');
-    bg.addColorStop(0.55, '#05070f');
-    bg.addColorStop(1, '#020308');
+    // 深空底：中心银白、外围靛蓝，先铺一个很克制的宇宙底色。
+    const bg = ctx.createRadialGradient(this.CX, this.CY, 0, this.CX, this.CY, Math.max(W, H) * 0.78);
+    bg.addColorStop(0, '#15182a');
+    bg.addColorStop(0.18, '#0b1221');
+    bg.addColorStop(0.62, '#050914');
+    bg.addColorStop(1, '#010207');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
+
+    // 倾斜的银河盘：细微的椭圆雾带，帮助眼睛感受到盘面方向。
+    ctx.save();
+    ctx.translate(this.CX + this.panX, this.CY + this.panY);
+    ctx.rotate(-0.16);
+    ctx.globalCompositeOperation = 'lighter';
+    const disk = ctx.createRadialGradient(0, 0, this.RCORE * 0.2, 0, 0, this.RMAX * 1.4);
+    disk.addColorStop(0, 'rgba(255,246,220,.18)');
+    disk.addColorStop(.22, 'rgba(140,190,255,.065)');
+    disk.addColorStop(.62, 'rgba(90,110,220,.026)');
+    disk.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = disk;
+    ctx.scale(1, .25);
+    ctx.beginPath();
+    ctx.arc(0, 0, this.RMAX * 1.35, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.globalCompositeOperation = 'source-over';
 
     // 没有记忆时也要有星空底：尘埃和远景星照画，只是没有星点和标签
 
@@ -1517,6 +1524,24 @@ class Galaxy {
       ctx.fill();
     }
     ctx.globalCompositeOperation = 'source-over';
+
+    // 旋臂骨架线：比单纯星点更能读出银河的盘面和旋转方向。
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (const arm of this.armTrails ?? []) {
+      let started = false;
+      for (const q of arm.points) {
+        const p = this.project(q.x, q.y, q.z);
+        if (!p) { started = false; continue; }
+        if (!started) { ctx.beginPath(); ctx.moveTo(p.x, p.y); started = true; }
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.strokeStyle = `rgba(${arm.tone},.13)`;
+      ctx.lineWidth = Math.max(1, this.zoom * 1.3);
+      ctx.stroke();
+    }
+    ctx.restore();
 
     // 星系核心
     const core = this.project(0, 0, 0);
@@ -1577,6 +1602,26 @@ class Galaxy {
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
     }
+
+    // 沿旋臂的亮星团，亮度随时间轻微呼吸。
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const pulseTime = performance.now() * 0.001;
+    for (const c of this.clusters ?? []) {
+      const p = this.project(c.x, c.y, c.z);
+      if (!p) continue;
+      const pulse = 0.82 + Math.sin(pulseTime * 0.7 + c.phase) * 0.18;
+      const r = Math.max(.8, c.size * p.k * 1.8);
+      ctx.globalAlpha = c.alpha * pulse;
+      ctx.fillStyle = `rgb(${c.tone})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+      if (r > 1.5) {
+        ctx.globalAlpha = c.alpha * pulse * .2;
+        ctx.strokeStyle = `rgb(${c.tone})`;
+        ctx.beginPath(); ctx.moveTo(p.x - r * 4, p.y); ctx.lineTo(p.x + r * 4, p.y); ctx.moveTo(p.x, p.y - r * 4); ctx.lineTo(p.x, p.y + r * 4); ctx.stroke();
+      }
+    }
+    ctx.restore();
 
     // 收集并按深度排序（远的先画）
     const items = [];
@@ -1722,7 +1767,7 @@ class Galaxy {
       placed.push(box);
       ly = box.y + 10;
 
-      ctx.fillStyle = 'rgba(4,7,14,0.6)';
+      ctx.fillStyle = 'rgba(4,7,14,0.72)'
       roundRect(ctx, box.x, box.y, box.w, box.h, 6);
       ctx.fill();
       ctx.textAlign = 'center';
@@ -2766,7 +2811,8 @@ function renderStatus() {
   el.statusCount.textContent = `显示 ${shown} / ${total} 条`;
   const site = S.snap?.site?.origin;
   el.statusSite.textContent = site ? `服务 ${site}` : '';
-  el.brandSub.textContent = `${total} 条记忆 · ${S.snap?.stats?.openPromises ?? 0} 个承诺在等`;
+  // 新旧页面都共用这份脚本；新版有品牌副标题，未来的精简嵌入页可能没有它。
+  if (el.brandSub) el.brandSub.textContent = `${total} 条记忆 · ${S.snap?.stats?.openPromises ?? 0} 个承诺在等`;
   applyInspState();
 }
 
