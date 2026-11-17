@@ -641,3 +641,16 @@ html[data-mode="light"] .next-brand-copy strong { color: #172532; text-shadow: 1
 html[data-mode="light"] .next-rail h3::before,
 html[data-mode="light"] #insp-body h3::before,
 html[data-mode="light"] .h-block h3::before { color: #8a6a00; }
+
+/* 浅色：侧栏筛选块、状态卡、HUD、搜索聚焦、次级按钮原来都是硬编码深底 */
+html[data-mode="light"] .chip { background: #fff; border-color: var(--line-2); }
+html[data-mode="light"] .chip:hover,
+html[data-mode="light"] .chip.on { background: var(--sheet-3); border-color: var(--line-strong); }
+html[data-mode="light"] .status-card { background: #fff; }
+html[data-mode="light"] .legend,
+html[data-mode="light"] .hud-actions { background: rgba(255, 255, 255, .9); }
+html[data-mode="light"] .next-search:focus-within { background: #fff; border-color: rgba(22, 143, 131, .5); box-shadow: 0 0 0 1px rgba(22, 143, 131, .16); }
+html[data-mode="light"] .btn:not(.primary) { background: #fff; }
+html[data-mode="light"] .btn:not(.primary):hover { background: var(--sheet-2); }
+html[data-mode="light"] .rail-sign { display: none; }
+html[data-mode="light"] .card-text { background: #fff; }
