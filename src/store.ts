@@ -87,6 +87,8 @@ export interface CoreState {
   lastChillDay?: string;
   /** 自我意识插件写过的那条想法，已经推给主模型了——别每轮都推同一条。 */
   lastSelfThoughtId?: string;
+  /** 自我意识写下的「想说话」已经用来开过口了，别重复。 */
+  lastUrgeId?: string;
   /** 已经收成卡片的想法 id（只留最近 100 个，够防重复了）。 */
   absorbedThoughtIds?: string[];
   rawWatermark?: number;

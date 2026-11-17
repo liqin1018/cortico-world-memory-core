@@ -1436,6 +1436,34 @@ export class MemoryCoreWorld implements World {
   }
 
   /** 读最近的想法原文，按时间倒序。没装那个插件就返回空数组。 */
+  /**
+   * 她写下的「想说话」：30 分钟内、还没用过的那条。
+   * 没装自我意识插件就返回 null，不报错。
+   */
+  private readFreshUrge(now: Date): { id: string; text: string; quietMin: number } | null {
+    const file = join(this.dataDir, '..', 'self-awareness', 'urges.jsonl');
+    if (!existsSync(file)) return null;
+    let lines: string[] = [];
+    try {
+      lines = readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-20);
+    } catch {
+      return null;
+    }
+    for (const line of lines.reverse()) {
+      try {
+        const o = JSON.parse(line) as { id?: string; ts?: string; text?: string; quietMin?: number };
+        if (typeof o.text !== 'string' || !o.text.trim()) continue;
+        if (o.id && o.id === this.state.lastUrgeId) continue;
+        const at = Date.parse(String(o.ts ?? ''));
+        if (!Number.isFinite(at) || now.getTime() - at > 30 * 60_000) continue;
+        return { id: String(o.id ?? ''), text: o.text, quietMin: Number(o.quietMin) || 0 };
+      } catch {
+        // 坏行跳过
+      }
+    }
+    return null;
+  }
+
   private readThoughts(limit = 40): { id: string; ts: string; text: string; importance: number }[] {
     const file = join(this.dataDir, '..', 'self-awareness', 'thoughts.jsonl');
     if (!existsSync(file)) return [];
@@ -1567,7 +1595,10 @@ export class MemoryCoreWorld implements World {
     const cfg = this.cfg();
     if (!cfg.proactiveEnabled) return;
     const p = localParts(now, this.tz());
-    const due = this.state.proactiveDueAt ? Date.parse(this.state.proactiveDueAt) : 0;
+    // 她想说话了：这份冲动可以把「下一次」提前，但仍然要过睡眠/免打扰/上限/静默门
+    const urge = this.cfg().shareSelfThought === false ? null : this.readFreshUrge(now);
+    let due = this.state.proactiveDueAt ? Date.parse(this.state.proactiveDueAt) : 0;
+    if (urge) due = 0;
     if (Number.isFinite(due) && due > now.getTime()) return;
 
     const defer = (minutes: number) => {
@@ -1596,7 +1627,9 @@ export class MemoryCoreWorld implements World {
       defer(30);
       return;
     }
-    const gate = Number(cfg.idleGateMin) || 0;
+    const baseGate = Number(cfg.idleGateMin) || 0;
+    // 她刚说「想说话」，就别按 20 分钟等——但也至少要静 6 分钟，别追着人说话
+    const gate = urge ? Math.min(baseGate || 6, 6) : baseGate;
     if (lastUser && gate > 0 && now.getTime() - lastUser < gate * 60_000) {
       defer(Math.ceil((gate * 60_000 - (now.getTime() - lastUser)) / 60_000) + 1);
       return;
@@ -1612,12 +1645,17 @@ export class MemoryCoreWorld implements World {
           const age = now.getTime() - (Date.parse(t.ts) || 0);
           return Number.isFinite(age) && age < 1.5 * 3_600_000;
         }) ?? null;
-    const thinkLine = think ? `\n（你刚才一个人在想的：${clip(think.text, 60)}）` : '';
+    const thinkLine = urge
+      ? `\n（你刚才一个人在想的：${clip(urge.text, 60)}；他已经 ${urge.quietMin} 分钟没说话了）`
+      : think ? `\n（你刚才一个人在想的：${clip(think.text, 60)}）` : '';
     const text = `（由头：${formatLocal(now, this.tz()).slice(11)}，你${this.state.activity}`
       + `${this.state.location ? `，在${this.state.location}` : ''}，精力 ${Math.round(this.state.energy)}`
       + `${since ? `；上次说话是 ${since} 前` : ''}。${reason}${thinkLine}）想主动跟对方说一句，别问「在吗」，直接说你此刻的事。`;
     const ok = await this.push('mcore.wake', text, 'flush');
-    if (ok && think) {
+    if (ok && urge) {
+      this.state.lastUrgeId = urge.id;
+      this.save();
+    } else if (ok && think) {
       this.state.lastSelfThoughtId = think.id;
       this.save();
     }

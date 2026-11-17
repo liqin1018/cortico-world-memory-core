@@ -97,6 +97,8 @@ pnpm add cortico-world-memory-core
 1. `envPromptVars()` 只回常量 —— 前缀永远不变，缓存不会因为「今天主动了几次」被冲掉。
 2. 默认不每轮推送状态；要就开 `contextEveryMin`。
 3. 主动开口先看对方最近 8 小时说过话没有，没有就只把 `dueAt` 往后推，不调模型。
+4. 如果自我意识插件写了「想说话」（`../self-awareness/urges.jsonl`，30 分钟内、没用过），这一次可以不等原定间隔，
+   静默门也放宽到 6 分钟；由头用她的原话。她说「先搁着」时不会写。
 4. 工作区文件检索有 60 秒缓存，只在 `recall` 带 query 时才发生，不增加每轮成本。
 
 工具 schema 里不写数值边界（handler 会 clamp），提示词里不重复 schema 已经说清的 kind 定义——两边各说各的，加起来 1,003 tok 左右。`tools/test-upgrade.ts` 最后两项是守门：schema ≤ 2600 字符、提示词 ≤ 480 字，改胖了会红。
