@@ -31,6 +31,8 @@ export interface Card {
   /** 缺省视为 active：老数据没有这个字段，读的时候补上。 */
   status?: CardStatus;
   retiredAt?: string;
+  /** 从自我意识收下来时，记下那条想法的 id：她删了想法，这张卡要跟着撤。 */
+  srcThoughtId?: string;
   /** 谁让它退休的：'merge' | 'purge' | 'stale' | 接替它的卡片 id。 */
   retiredBy?: string;
   /** 它接替了哪些卡（编辑留版本、closes 关旧记录时写）。 */

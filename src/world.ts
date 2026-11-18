@@ -1163,6 +1163,7 @@ export class MemoryCoreWorld implements World {
         Boolean(this.cfg().captureBackfill)
         && (Number(this.state.watermarkVersion ?? 0) < CAPTURE_WATERMARK_VERSION || !this.state.backfillDoneAt),
       );
+      this.pruneDeletedThoughts();
       this.absorbThoughts(now);
       await this.maybeContext(now);
       await this.maybePreactivate(now);
@@ -1497,6 +1498,44 @@ export class MemoryCoreWorld implements World {
    * 文本前面加「独处时写下」——不然它会以卡片的身份进上下文，被当成此刻的想法，
    * 那又变成替她认领了。
    */
+  /**
+   * 她删掉的想法，墓碑写在 `deleted-thoughts.jsonl`。
+   * 由那条想法收成的卡片要一起清掉——不然时间线里没了，星图上还挂着。
+   * 只认带 srcThoughtId 的新卡片；老卡片没有来源 id，只能手动删。
+   */
+  private pruneDeletedThoughts(): void {
+    const file = join(this.dataDir, '..', 'self-awareness', 'deleted-thoughts.jsonl');
+    if (!existsSync(file)) return;
+    const ids = new Set<string>();
+    try {
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        const s = line.trim();
+        if (!s) continue;
+        try {
+          const o = JSON.parse(s) as { id?: unknown };
+          if (typeof o.id === 'string' && o.id) ids.add(o.id);
+        } catch {
+          // 坏行跳过
+        }
+      }
+    } catch {
+      return;
+    }
+    if (!ids.size) return;
+    const victims = this.store
+      .all()
+      .filter((c) => c.srcThoughtId && ids.has(c.srcThoughtId))
+      .map((c) => c.id);
+    if (victims.length) {
+      this.store.purge(victims);
+      try {
+        this.host?.log?.info?.('[memory-core] 她删了想法，跟着撤回卡片', { count: victims.length });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   private absorbThoughts(now: Date): void {
     if (this.cfg().absorbSelfThought === false) return;
     const done = new Set(this.state.absorbedThoughtIds ?? []);
@@ -1517,6 +1556,7 @@ export class MemoryCoreWorld implements World {
           tags: ['独处'],
           source: 'self-awareness',
           origin: 'tool',
+          srcThoughtId: t.id,
         });
         added += 1;
       }

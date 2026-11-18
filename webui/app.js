@@ -2355,6 +2355,7 @@ function renderInspector() {
           ? `<button class="btn tiny" id="btn-restore">恢复这条</button>`
           : `<button class="btn tiny" id="btn-retire">退休</button>`
       }
+      <button class="btn tiny danger" id="btn-purge">彻底删除</button>
     </div>
     ${lineageHtml(card)}
     ${
@@ -2391,7 +2392,14 @@ function renderInspector() {
       toast('复制失败，浏览器不给剪贴板权限', true);
     }
   });
-  // 彻底删除只在维护面板 → 回收站里给：详情栏紧挨「退休」，误触一次就没了
+  // 详情栏也能直接删：二次确认 + 10 秒撤销，和回收站里是同一套
+  const purgeBtn = $('#btn-purge');
+  if (purgeBtn) {
+    purgeBtn.addEventListener('click', async () => {
+      const n = await purgeWithUndo([card.id]);
+      if (n) await load();
+    });
+  }
   const retireBtn = $('#btn-retire');
   if (retireBtn) {
     retireBtn.addEventListener('click', async () => {
