@@ -120,6 +120,18 @@ function extractUserText(raw: string): string {
     .trim();
 }
 
+/** 给召回行用的来源缩写：模型要知道这句话是从哪个渠道来的。 */
+export function senderLabel(sender?: string): string {
+  const s = String(sender ?? '');
+  if (s.startsWith('qq-official.c2c')) return 'QQ官方私聊';
+  if (s.startsWith('qq-official.group')) return 'QQ群';
+  if (s.startsWith('qq-official.channel')) return 'QQ频道';
+  if (s.startsWith('private:')) return 'QQ私聊';
+  if (s.startsWith('desktop-pet')) return '桌宠';
+  if (s.startsWith('starpost')) return '星邮';
+  return '';
+}
+
 export class MemoryCoreWorld implements World {
   readonly id = 'memory-core';
   private readonly ctx: WorldContext<MemoryCoreConfig>;
@@ -922,7 +934,11 @@ export class MemoryCoreWorld implements World {
     if (mode === 'search' && query) {
       const hits = rankRaw(this.raw.all(), query, Math.max(1, Math.min(3, limit)));
       for (const hit of hits) {
-        push(`· [对话 ${formatLocal(hit.ts, tz).slice(5)}] ${clip(hit.text, 90)}`);
+        const from = senderLabel(hit.sender);
+        // 多个 qq-official 私聊对象共用一个标签，再带一段 openid 尾巴才分得开
+        const peer = from === 'QQ官方私聊' ? (/[A-Za-z0-9]{4}$/.exec(String(hit.sender ?? ''))?.[0] ?? '') : '';
+        const tag = from ? `·${from}${peer ? `·${peer}` : ''}` : '';
+        push(`· [对话 ${formatLocal(hit.ts, tz).slice(5)}${tag}] ${clip(hit.text, 90)}`);
       }
       if (this.cfg().workspaceScanEnabled && lines.join('\n').length < maxChars) {
         const docHits = searchDocs(this.docs(), query, 2);
@@ -1190,8 +1206,12 @@ export class MemoryCoreWorld implements World {
    */
   private senderRe(cfg: MemoryCoreConfig): RegExp {
     const raw = String(cfg.captureSenders ?? '').trim();
-    const legacy = '^(starpost\\.private\\.|qq\\.|desktop-pet\\.message)';
-    const pattern = !raw || raw === legacy ? MEMORY_CORE_DEFAULTS.captureSenders : raw;
+    // 两版旧默认都算「没动过」：升级时自动补上 qq-official 的私聊前缀
+    const legacy = [
+      '^(starpost\\.private\\.|qq\\.|desktop-pet\\.message)',
+      '^(desktop-pet\\.(chat|message|answer|voice)|private:|qq\\.private\\.|starpost\\.private\\.)',
+    ];
+    const pattern = !raw || legacy.includes(raw) ? MEMORY_CORE_DEFAULTS.captureSenders : raw;
     try {
       return new RegExp(pattern);
     } catch {
@@ -1240,7 +1260,14 @@ export class MemoryCoreWorld implements World {
     while (!drained && rounds < budget) {
       rounds += 1;
       const to = Math.min(from + CAPTURE_BATCH, head);
-      let events: readonly { cursor: number; ts: string; senderKey?: string; text: string }[] = [];
+      let events: readonly {
+        cursor: number;
+        ts: string;
+        senderKey?: string;
+        text: string;
+        type?: string;
+        tags?: readonly string[];
+      }[] = [];
       try {
         events = host.store.range({ fromCursor: from + 1, toCursor: to, origin: 'external' });
       } catch {
@@ -1249,6 +1276,14 @@ export class MemoryCoreWorld implements World {
       scanned += events.length;
       for (const e of events) {
         const key = e.senderKey ?? '';
+        const kind = String(e.type ?? '');
+        const tags = Array.isArray(e.tags) ? e.tags : [];
+        // 方向过滤：qq-official 收发共用同一个 senderKey，只能看 type / tags。
+        // 自己说出去的回执带 speak 标签或 *.sent / *.attempt，都不能记成「对方说的」。
+        if ((kind.startsWith('qq-official.') || key.startsWith('qq-official.')) && tags.includes('speak')) continue;
+        if (/\.(sent|attempt)$/.test(kind)) continue;
+        // 插件占位兜底：老版本没有 type/tags 时，靠正文认「准备发送 → 私聊 msg_seq=…」
+        if (/^准备发送\s*(?:→|->)/.test(String(e.text ?? '').trim())) continue;
         // captureAll 打开时不再看白名单：群里的其他人、自己发的都记
         if (!cfg.captureAll && !re.test(key)) {
           // 记几个被挡掉的 key，出问题时一眼能看出是白名单还是正文的问题
@@ -1262,7 +1297,7 @@ export class MemoryCoreWorld implements World {
         if (/^\[(表情包|CQ:|图片)/.test(text)) continue;
         if (/^[\p{P}\p{S}\s]+$/u.test(text)) continue;
         if (/^\[[^\]]{0,12}\]$/.test(text.trim())) continue;
-        items.push({ cursor: e.cursor, ts: e.ts, sender: maskSender(key).slice(0, 40), text });
+        items.push({ cursor: e.cursor, ts: e.ts, sender: maskSender(key).slice(0, 64), text });
       }
       // 按窗口边界推进，不按「最后一个匹配到的 cursor」：窗口里可能一条 external 都没有
       from = to;

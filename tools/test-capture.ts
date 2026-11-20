@@ -5,7 +5,7 @@
 import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryCoreWorld } from '../src/world.ts';
+import { MemoryCoreWorld, senderLabel } from '../src/world.ts';
 import { MEMORY_CORE_DEFAULTS } from '../src/config.ts';
 import { RawLog } from '../src/store.ts';
 
@@ -220,4 +220,36 @@ function boot(over: Record<string, unknown> = {}) {
   const log = new RawLog(dir, 7, 90);
   const out = log.all().map((e) => e.cursor);
   console.log('9) 乱序文件 → 读出', out.join(','), out.join(',') === '5,40,900' ? 'OK' : 'FAIL');
+}
+
+// 10) qq-official：收发共用 senderKey，只能靠 type/tags 分方向
+//     自己说的（sent/speak）、准备发送（attempt）、群聊 都不能记成「对方说的」
+{
+  const now = new Date().toISOString();
+  const rows = [
+    { cursor: 1, ts: now, senderKey: 'qq-official.c2c:ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', type: 'qq-official.message', text: '写那条的时候是 23:05，你还记得吗' },
+    { cursor: 2, ts: now, senderKey: 'qq-official.c2c.1940008084', type: 'qq-official.sent', tags: ['speak'], text: '查到了，两条。' },
+    { cursor: 3, ts: now, senderKey: 'qq-official.c2c.1940008084', type: 'qq-official.attempt', text: '准备发送 → 私聊 msg_seq=2' },
+    { cursor: 4, ts: now, senderKey: 'qq-official.group.555', type: 'qq-official.message', text: '群里的消息不该进来' },
+    { cursor: 5, ts: now, senderKey: 'qq-official.c2c.1940008084', type: 'qq-official.message', text: '*(075F92): 测试一下记忆原文' },
+  ];
+  // 故意用 0.23 及以前的默认值：升级后应自动补上 qq-official，不用用户手改配置
+  const oldDefault = '^(desktop-pet\\.(chat|message|answer|voice)|private:|qq\\.private\\.|starpost\\.private\\.)';
+  const { world, dataDir } = boot({ captureSenders: oldDefault });
+  await world.start(fakeHost(rows as never));
+  const file = join(dataDir, 'memory-core', 'turns.jsonl');
+  const texts = existsSync(file)
+    ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).text)
+    : [];
+  const raw = existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) : [];
+  const sender = raw.length ? String(JSON.parse(raw[0]).sender ?? '') : '';
+  const label = senderLabel(sender);
+  const good = texts.length === 2
+    && texts.some((t) => t.includes('23:05'))
+    && texts.some((t) => t.includes('075F92'))
+    && !texts.some((t) => t.includes('查到了') || t.includes('准备发送') || t.includes('群里'));
+  console.log('10) qq-official 方向过滤 →', texts.length, '行', good ? 'OK' : 'FAIL');
+  console.log('    来源标签:', label, '| sender 长度', sender.length,
+    label === 'QQ官方私聊' && sender.length > 40 ? 'OK' : 'FAIL');
+  await world.stop();
 }

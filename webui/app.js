@@ -2232,6 +2232,14 @@ function renderTurns() {
 
 function shortSender(key) {
   const raw = String(key ?? '');
+  // qq-official 的私聊/群/频道前缀一样，只看第一段会全变成「qq-official.」
+  if (raw.startsWith('qq-official.')) {
+    const kind = raw.startsWith('qq-official.c2c') ? 'QQ 官方私聊'
+      : raw.startsWith('qq-official.group') ? 'QQ 群'
+        : raw.startsWith('qq-official.channel') ? 'QQ 频道' : 'QQ 官方';
+    const tail = raw.slice(raw.indexOf(':') + 1).slice(-4);
+    return raw.includes(':') && tail ? `${kind} · ${tail}` : kind;
+  }
   const base = raw.split(/[.:]/)[0];
   const map = { starpost: '星邮', qq: 'QQ', private: 'QQ 私聊', 'desktop-pet': '桌宠' };
   return map[base] ?? (raw || '—').slice(0, 12);

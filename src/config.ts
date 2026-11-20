@@ -94,7 +94,7 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   captureTurns: true,
   // 真实 senderKey 长这样：private:1940008084（QQ 私聊）、desktop-pet.chat（桌宠对话）。
   // 老默认值一个都匹配不上，导致原文库一直是 0 行 —— 改这个 regex 前先看一遍 data/runs/*/events.jsonl。
-  captureSenders: '^(desktop-pet\\.(chat|message|answer|voice)|private:|qq\\.private\\.|starpost\\.private\\.)',
+  captureSenders: '^(desktop-pet\\.(chat|message|answer|voice)|private:|qq\\.private\\.|qq-official\\.c2c[.:]|starpost\\.private\\.)',
   captureAll: false,
   captureMinLength: 4,
   rawRetentionDays: 14,

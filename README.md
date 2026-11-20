@@ -97,7 +97,9 @@ pnpm add cortico-world-memory-core
 1. `envPromptVars()` 只回常量 —— 前缀永远不变，缓存不会因为「今天主动了几次」被冲掉。
 2. 默认不每轮推送状态；要就开 `contextEveryMin`。
 3. 主动开口先看对方最近 8 小时说过话没有，没有就只把 `dueAt` 往后推，不调模型。
-4. 如果自我意识插件写了「想说话」（`../self-awareness/urges.jsonl`，30 分钟内、没用过），这一次可以不等原定间隔，
+4. qq-official 的私聊：白名单认 `qq-official.c2c`，并按 `type`/`tags` 去掉她自己发出去的回执和「准备发送」占位——
+   那个插件收发共用同一个 senderKey，只看前缀会把两边混在一起。
+5. 如果自我意识插件写了「想说话」（`../self-awareness/urges.jsonl`，30 分钟内、没用过），这一次可以不等原定间隔，
    静默门也放宽到 6 分钟；由头用她的原话。她说「先搁着」时不会写。
 4. 工作区文件检索有 60 秒缓存，只在 `recall` 带 query 时才发生，不增加每轮成本。
 
