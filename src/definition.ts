@@ -7,6 +7,7 @@ import { MemoryCoreWorld } from './world.ts';
 
 const SUMMARIES: Record<string, string> = {
   mcore_write: '写一条记忆卡片（事实/自己/经历/承诺/临时）。',
+  mcore_update: '改一条已有记忆：正文改动走改口留档，元数据原地改。',
   mcore_recall: '按内容或时间检索记忆，也能查最近 7 天的对话原文与未完成的承诺。',
   mcore_state: '读写你自己的精力、心情、正在做什么、在哪。',
   mcore_plan: '安排今天的日程，作为主动开口的由头。',

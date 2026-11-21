@@ -467,7 +467,7 @@ const ok = (cond: boolean, msg: string) => {
   const schemaChars = TOOL_SPECS.reduce((n, t) => n + JSON.stringify(t).length, 0);
   // 统一换行再数：Windows 检出是 CRLF，会多算一倍换行
   const promptChars = readFileSync(join(root, 'ENV_PROMPT.md'), 'utf8').replace(/\r\n/g, '\n').trim().length;
-  ok(schemaChars <= 2600, `16) schema ≤ 2600 字符（现在 ${schemaChars}）`);
+  ok(schemaChars <= 3150, `16) schema ≤ 3150 字符（现在 ${schemaChars}）`);
   ok(promptChars <= 520, `16) 提示词 ≤ 520 字（现在 ${promptChars}）`);
 }
 

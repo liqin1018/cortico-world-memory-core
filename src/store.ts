@@ -28,6 +28,8 @@ export interface Card {
   dueAt?: string;
   done?: boolean;
   remindedAt?: string;
+  /** 已经主动提醒过几次（到 remindMaxTimes 就停，只留体检页）。 */
+  remindCount?: number;
   /** 缺省视为 active：老数据没有这个字段，读的时候补上。 */
   status?: CardStatus;
   retiredAt?: string;
@@ -91,6 +93,11 @@ export interface CoreState {
   lastSelfThoughtId?: string;
   /** 自我意识写下的「想说话」已经用来开过口了，别重复。 */
   lastUrgeId?: string;
+  /** 任意一条承诺的最近提醒时间：用来控制两条之间的最小间隔。 */
+  lastRemindAt?: string;
+  /** 承诺提醒的每日计数（跨天清零）。 */
+  remindDay?: string;
+  remindCountToday?: number;
   /** 已经收成卡片的想法 id（只留最近 100 个，够防重复了）。 */
   absorbedThoughtIds?: string[];
   rawWatermark?: number;

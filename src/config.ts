@@ -18,8 +18,24 @@ export interface MemoryCoreConfig {
   idleGateMin: number;
   /** 只有最近这么多小时内对方说过话才主动（0 = 不限制）。 */
   requireRecentUserHours: number;
-  /** 承诺到期后，隔多少天可以再提醒一次（0 = 只提醒一次）。 */
-  promiseRepeatDays: number;  /** 免打扰开始（含）。 */
+  /** 旧字段：承诺隔几天再提。保留兼容，新逻辑改用 remindRepeatMin。 */
+  promiseRepeatDays: number;
+  /** 承诺提醒的可打扰时段（含开始，不含结束），跨夜也支持。 */
+  remindWindowStart: string;
+  remindWindowEnd: string;
+  /** 两条承诺提醒之间至少隔多久（分钟）。 */
+  remindMinGapMin: number;
+  /** 每天最多提醒几条（0 = 不限）。 */
+  remindDailyCap: number;
+  /** 同一条承诺没回应时，隔多久再提（分钟）。 */
+  remindRepeatMin: number;
+  /** 同一条承诺最多提醒几次，到顶就只留在体检页。 */
+  remindMaxTimes: number;
+  /** 对方最近没说话时是否也允许提醒；默认 false（等 TA 出现再说）。 */
+  remindWithoutUser: boolean;
+  /** 打开上一条时，超过多少小时未处理才允许在无人时提醒。 */
+  remindForceAfterHours: number;
+  /** 免打扰开始（含）。 */
   quietStart: string;
   /** 免打扰结束（不含）。 */
   quietEnd: string;
@@ -86,6 +102,14 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   idleGateMin: 20,
   requireRecentUserHours: 5,
   promiseRepeatDays: 1,
+  remindWindowStart: '08:00',
+  remindWindowEnd: '23:00',
+  remindMinGapMin: 120,
+  remindDailyCap: 3,
+  remindRepeatMin: 180,
+  remindMaxTimes: 6,
+  remindWithoutUser: false,
+  remindForceAfterHours: 6,
   quietStart: '23:30',
   quietEnd: '08:00',
   sleepStart: '01:00',
@@ -158,7 +182,30 @@ const RAW_GROUP: ConfigGroup = {
       'worlds.memory-core.proactiveDailyCap': num('每天主动上限', '一次主动约 1-2 万 token（看上下文长度），3 次大概 5 万。0 = 不限。', 0, 12, '次'),
       'worlds.memory-core.idleGateMin': num('对方刚说话后的静默', '窗口内不主动，免得打断。', 0, 240, '分钟'),
       'worlds.memory-core.requireRecentUserHours': num('对方多久没说话就不主动', '超过这个时长就当没人在，主动会对着空房间说话、白花钱。0 = 不限制。', 0, 72, '小时'),
-      'worlds.memory-core.promiseRepeatDays': num('承诺隔几天再提一次', '到期还没做的承诺，隔这么多天再提一次，直到做完或退休。默认 1（每天最多一次）；0 = 只提醒一次。', 0, 30, '天'),
+      'worlds.memory-core.promiseRepeatDays': num('承诺隔几天再提一次（旧）', '旧字段，保留兼容；现在由下面「同一条没回应时隔多久再提」控制。', 0, 30, '天'),
+      'worlds.memory-core.remindWindowStart': {
+        type: 'string',
+        title: '承诺提醒时段 · 开始',
+        description: '24 小时制 HH:MM。默认 08:00–23:00；起止相同等于不限制。夜里到期不会吵醒人，等进入时段再提。',
+        default: '08:00',
+      } as never,
+      'worlds.memory-core.remindWindowEnd': {
+        type: 'string',
+        title: '承诺提醒时段 · 结束',
+        description: '默认 23:00。',
+        default: '23:00',
+      } as never,
+      'worlds.memory-core.remindMinGapMin': num('两条承诺提醒至少隔多久', '防止几条同时到期时连着轰炸。默认 120 分钟。', 15, 1440, '分钟'),
+      'worlds.memory-core.remindDailyCap': num('每天最多提醒几条承诺', '默认 3 条；超出的留到明天或体检页手动提。0 = 不限。', 0, 20, '条'),
+      'worlds.memory-core.remindRepeatMin': num('同一条没回应时隔多久再提', '默认 180 分钟。对方没回、也没标完成，才会再提。', 30, 1440, '分钟'),
+      'worlds.memory-core.remindMaxTimes': num('同一条最多提醒几次', '到顶就只留在体检页，不再主动提。默认 6 次（约三天）。', 1, 30, '次'),
+      'worlds.memory-core.remindWithoutUser': {
+        type: 'boolean',
+        title: '对方不在时也提醒',
+        description: '默认关：只登记，等对方出现再说（策略 A）。打开后，超过下面那个小时数仍未处理的，会在时段内主动推一次（策略 B）。',
+        default: false,
+      },
+      'worlds.memory-core.remindForceAfterHours': num('无人时最多等多久', '仅在上面开关打开时生效。默认 6 小时。', 1, 72, '小时'),
       'worlds.memory-core.quietStart': {
         type: 'string',
         title: '免打扰开始',
@@ -235,7 +282,7 @@ const RAW_GROUP: ConfigGroup = {
         description: '排序时参考「上次被想起的时间」：长期没被召回、权重又低的卡排到后面。关掉就退回只看关键词、标签和权重。',
       },
       'worlds.memory-core.preactivateLines': num('每轮主动想起几条', '按对方刚说的话自动带出几条旧记忆，不用模型自己去查。0 = 关。每条约 20 字，默认 2 条。', 0, 3, '条'),
-      'worlds.memory-core.chillAfterDays': num('多久没想起就沉到冷层', '超过这个天数没被用过的低权重「经历/临时」记忆会沉到冷层：不再主动想起、不占「最近」，但搜索仍能找到，可一键回暖。事实、自我和未完成的承诺不会被沉。0 = 关闭。', 0, 3650, '天'),
+      'worlds.memory-core.chillAfterDays': num('多久没想起就沉到冷层', '超过这个天数没被用过的低权重「经历/临时」记忆会沉到冷层：不再主动想起、不占「最近」，但搜索仍能找到，可一键回暖。事实、自我和未完成的承诺不会被沉。**沉下去不是删除**：搜索仍找得到，只是在星图上退到冷层；要真删去卡片详情里删。0 = 关闭。', 0, 3650, '天'),
       'worlds.memory-core.contextEveryMin': num('状态投递间隔', '每隔这么多分钟把「我在做什么」推到上下文里。0 = 不推（默认，最省）；推一次约 60 token，但每轮都在历史里。', 0, 240, '分钟'),
       'worlds.memory-core.nightlyConsolidate': {
         type: 'boolean',
@@ -328,6 +375,14 @@ const SETTINGS_ORDER = [
   'worlds.memory-core.idleGateMin',
   'worlds.memory-core.requireRecentUserHours',
   'worlds.memory-core.promiseRepeatDays',
+  'worlds.memory-core.remindWindowStart',
+  'worlds.memory-core.remindWindowEnd',
+  'worlds.memory-core.remindMinGapMin',
+  'worlds.memory-core.remindDailyCap',
+  'worlds.memory-core.remindRepeatMin',
+  'worlds.memory-core.remindMaxTimes',
+  'worlds.memory-core.remindWithoutUser',
+  'worlds.memory-core.remindForceAfterHours',
   'worlds.memory-core.quietStart',
   'worlds.memory-core.quietEnd',
   'worlds.memory-core.sleepStart',

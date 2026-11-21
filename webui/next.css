@@ -654,3 +654,11 @@ html[data-mode="light"] .btn:not(.primary) { background: #fff; }
 html[data-mode="light"] .btn:not(.primary):hover { background: var(--sheet-2); }
 html[data-mode="light"] .rail-sign { display: none; }
 html[data-mode="light"] .card-text { background: #fff; }
+
+/* 体检页：已到期的承诺，别再只给一个数字 */
+.due-list { flex: 1 0 100%; width: 100%; margin-top: 4px; display: grid; gap: 4px; }
+.due-item { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; color: var(--ink-soft); }
+.due-late { flex: none; color: var(--acid); font: 10px var(--mono); letter-spacing: .04em; }
+.due-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.due-count { flex: none; color: var(--faint); font: 10px var(--mono); }
+html[data-mode="light"] .due-late { color: #8a6a00; }

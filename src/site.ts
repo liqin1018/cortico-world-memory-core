@@ -72,7 +72,7 @@ export interface HealthReport {
   cards: { total: number; active: number; retired: number; dead: number };
   recall: { calls: number; cardsTouched: number; primed: number };
   perDay: Array<{ day: string; n: number }>;
-  promises: { open: number; overdue: number; noDue: number; repeating: number };
+  promises: { open: number; overdue: number; noDue: number; repeating: number; repeatMin?: number; dueList?: Array<{ id: string; text: string; dueAt: string; lateMin: number; remindCount: number }> };
   raw: { lines: number; archivedDays: number; archivedLines: number };
   backup: { count: number; latest: string | null; dir: string };
   /** 冷层：沉下去多少、还能再沉多少、门槛多少天。 */

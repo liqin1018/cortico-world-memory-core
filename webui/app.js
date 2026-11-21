@@ -2726,8 +2726,14 @@ function renderHealth() {
         <span>未完成 <b>${h.promises.open}</b></span>
         <span class="${h.promises.overdue ? 'warn' : ''}">已过时间 <b>${h.promises.overdue}</b></span>
         <span class="${h.promises.noDue ? 'warn' : ''}">没有截止时间 <b>${h.promises.noDue}</b></span>
-        <span class="dim">${h.promises.repeating ? `每 ${h.promises.repeating} 天重提一次` : '只提醒一次'}</span>
+        <span class="dim">${h.promises.repeatMin ? `没回应时每 ${h.promises.repeatMin} 分钟再提` : '只提醒一次'}</span>
         ${h.promises.noDue ? '<button class="btn tiny" id="h-fix-promises">去补时间</button>' : ''}
+        ${(h.promises.dueList || []).length
+          ? `<div class="due-list">${(h.promises.dueList || []).map((d) => {
+            const late = d.lateMin >= 1440 ? `${Math.floor(d.lateMin / 1440)} 天` : d.lateMin >= 60 ? `${Math.floor(d.lateMin / 60)} 小时` : `${d.lateMin} 分钟`;
+            return `<div class="due-item"><span class="due-late">晚 ${late}</span><span class="due-text">${esc(d.text)}</span><span class="due-count">提醒 ${d.remindCount} 次</span></div>`;
+          }).join('')}</div>`
+          : ''}
       </div>
     </section>
 

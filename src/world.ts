@@ -657,6 +657,18 @@ export class MemoryCoreWorld implements World {
         overdue: open.filter((c) => c.dueAt && Date.parse(c.dueAt) <= now).length,
         noDue: open.filter((c) => !c.dueAt).length,
         repeating: this.promiseRepeat(),
+        repeatMin: Math.max(1, Number(this.cfg().remindRepeatMin) || 180),
+        dueList: open
+          .filter((c) => c.dueAt && Date.parse(c.dueAt) <= now)
+          .sort((a, b) => Date.parse(a.dueAt ?? '') - Date.parse(b.dueAt ?? ''))
+          .slice(0, 5)
+          .map((c) => ({
+            id: c.id.slice(0, 8),
+            text: clip(c.text, 60),
+            dueAt: c.dueAt ?? '',
+            lateMin: Math.max(0, Math.round((now - Date.parse(c.dueAt ?? '')) / 60_000)),
+            remindCount: Number(c.remindCount) || 0,
+          })),
       },
       raw: { lines: this.raw.size, archivedDays: rawStats.days, archivedLines: this.raw.archiveLines() },
       backup: this.store.backupInfo(),
@@ -767,6 +779,7 @@ export class MemoryCoreWorld implements World {
   private async dispatch(name: string, args: Record<string, unknown>): Promise<string> {
     try {
       if (name === 'mcore_write') return this.handleWrite(args);
+      if (name === 'mcore_update') return this.handleUpdate(args);
       if (name === 'mcore_recall') return this.handleRecall(args);
       if (name === 'mcore_state') return this.handleState(args);
       if (name === 'mcore_plan') return this.handlePlan(args);
@@ -774,6 +787,68 @@ export class MemoryCoreWorld implements World {
     } catch (error) {
       return `执行失败：${error instanceof Error ? error.message : String(error)}`;
     }
+  }
+
+  private handleUpdate(args: Record<string, unknown>): string {
+    if (!this.cfg().memoryEnabled) return '记忆已关闭（设置页里可以打开）。';
+    const id = str(args.id, 60).trim();
+    if (!id) return 'id 不能为空（传行首 8 位就够）。';
+    const card = this.findCard(id);
+    if (!card) return `找不到这条记忆：${id}`;
+    if (card.status === 'retired') return '这条已经退休（或被新卡替代）了，改它不会生效；要恢复请先在界面上恢复。';
+
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(args, k);
+    const text = has('text') ? str(args.text, 500).trim() : undefined;
+    const kindRaw = has('kind') ? String(args.kind ?? '') : '';
+    if (kindRaw && !CARD_KINDS.includes(kindRaw as CardKind)) {
+      return 'kind 只能是 fact / self / episode / promise / note。';
+    }
+    const kind = (kindRaw || card.kind) as CardKind;
+    const weight = has('weight') ? num(args.weight, card.weight, 0, 1) : card.weight;
+    const tags = has('tags')
+      ? (Array.isArray(args.tags) ? (args.tags as unknown[]).map((t) => String(t).slice(0, 20)).filter(Boolean).slice(0, 8) : [])
+      : card.tags;
+    const dueProvided = has('dueAt');
+    const dueRaw = dueProvided ? str(args.dueAt, 40).trim() : '';
+    const undated = /^(none|null|无|没有|无截止)$/i.test(dueRaw);
+    const dueAt = dueProvided ? (undated || !dueRaw ? undefined : dueRaw.replace(' ', 'T')) : card.dueAt;
+    if (kind === 'promise' && !dueAt) {
+      return '承诺要有截止时间。不知道具体时间就问一句；确实没有就传 dueAt:"none"。';
+    }
+    const doneProvided = typeof args.done === 'boolean';
+    const done = doneProvided ? Boolean(args.done) : card.done;
+
+    // 正文变了：写新卡接替，旧卡留档（不抹掉「当时是怎么记的」）
+    if (text && text !== card.text) {
+      const res = this.store.add({
+        kind,
+        text,
+        weight,
+        tags: [...tags],
+        dueAt,
+        source: 'tool',
+        origin: 'tool',
+        ...(card.src ? { src: card.src } : {}),
+      });
+      if (card.kind === 'promise') this.store.close(card.id);
+      this.store.supersede(card.id, res.card);
+      return `已改口：${card.id.slice(0, 8)} → ${res.card.id.slice(0, 8)}。旧的那条留在库里可回溯。`;
+    }
+
+    const patch: Partial<typeof card> = {};
+    if (kind !== card.kind) patch.kind = kind;
+    if (weight !== card.weight) patch.weight = weight;
+    if (has('tags')) patch.tags = [...tags];
+    if (dueProvided) patch.dueAt = dueAt;
+    if (doneProvided) patch.done = done;
+    // 截止时间或完成状态变了：提醒重新计数，别拿旧的「已提醒 6 次」把它压死
+    if (dueProvided || doneProvided) {
+      patch.remindedAt = undefined;
+      patch.remindCount = 0;
+    }
+    if (!Object.keys(patch).length) return '没有要改的字段（正文相同、元数据也没变）。';
+    this.store.update(card.id, patch);
+    return `已改：${card.id.slice(0, 8)}…（${Object.keys(patch).filter((k) => k !== 'remindedAt' && k !== 'remindCount').join('、') || '提醒状态'}）`;
   }
 
   private handleWrite(args: Record<string, unknown>): string {
@@ -1652,18 +1727,79 @@ export class MemoryCoreWorld implements World {
     return best ? { id: best.id, text: best.text, ts: best.ts } : null;
   }
 
+  /**
+   * 承诺到期提醒（策略 A：只登记，不硬打扰）。
+   *
+   * 和旧版的区别：
+   *  - 不再因为「对方最近没说话」就整条丢掉——不写 remindedAt，下次还会再看；
+   *  - 加了可打扰时段、全局间隔、每日上限、单条次数上限；
+   *  - 免打扰 / 睡眠期间不推，也不标记，等时段过了再提。
+   */
   private async maybeRemind(now: Date): Promise<void> {
-    const due = this.store.duePromises(now.getTime(), this.promiseRepeat());
+    const cfg = this.cfg();
+    const nowMs = now.getTime();
+    const maxTimes = Math.max(1, Number(cfg.remindMaxTimes) || 6);
+    const repeatMin = Math.max(1, Number(cfg.remindRepeatMin) || 180);
+
+    const due = this.store
+      .active()
+      .filter((c) => c.kind === 'promise' && !c.done && c.dueAt)
+      .filter((c) => {
+        const at = Date.parse(c.dueAt ?? '');
+        return Number.isFinite(at) && at <= nowMs;
+      })
+      .filter((c) => (Number(c.remindCount) || 0) < maxTimes)
+      .filter((c) => {
+        if (!c.remindedAt) return true;
+        const last = Date.parse(c.remindedAt);
+        return !Number.isFinite(last) || nowMs - last >= repeatMin * 60_000;
+      })
+      .sort((a, b) => Date.parse(a.dueAt ?? '') - Date.parse(b.dueAt ?? ''));
     if (!due.length) return;
-    const lastUser = this.probeLastUser(now.getTime());
-    if (this.cfg().requireRecentUserHours > 0) {
-      const hours = Number(this.cfg().requireRecentUserHours);
-      if (!lastUser || now.getTime() - lastUser > hours * 3_600_000) return;
+
+    const p = localParts(now, this.tz());
+    if (this.state.sleeping || inWindow(p.minutes, cfg.sleepStart, cfg.sleepEnd)) return;
+    if (inWindow(p.minutes, cfg.quietStart, cfg.quietEnd)) return;
+    if (!inWindow(p.minutes, cfg.remindWindowStart, cfg.remindWindowEnd)) return;
+
+    // 每日上限：跨天清零
+    if (this.state.remindDay !== p.date) {
+      this.state.remindDay = p.date;
+      this.state.remindCountToday = 0;
     }
+    const dailyCap = Number(cfg.remindDailyCap) || 0;
+    if (dailyCap > 0 && Number(this.state.remindCountToday ?? 0) >= dailyCap) return;
+
+    // 全局间隔：几条同时到期，也只一条一条来
+    const gapMin = Math.max(0, Number(cfg.remindMinGapMin) || 0);
+    if (gapMin > 0 && this.state.lastRemindAt) {
+      const last = Date.parse(this.state.lastRemindAt);
+      if (Number.isFinite(last) && nowMs - last < gapMin * 60_000) return;
+    }
+
+    const lastUser = this.probeLastUser(nowMs);
+    const recentHours = Number(cfg.requireRecentUserHours) || 0;
+    const silent = recentHours > 0 && (!lastUser || nowMs - lastUser > recentHours * 3_600_000);
+    if (silent) {
+      // 策略 A：默认不推，但也不标记——等对方出现再说
+      if (!cfg.remindWithoutUser) return;
+      const overdueH = (nowMs - Date.parse(due[0].dueAt ?? '')) / 3_600_000;
+      if (overdueH < (Number(cfg.remindForceAfterHours) || 6)) return;
+    }
+
     const card = due[0];
-    const ok = await this.push('mcore.due', `（答应过的事到点了：${clip(card.text, 80)}）该提一句了。`, 'flush');
+    const dueAt = Date.parse(card.dueAt ?? '');
+    const late = Number.isFinite(dueAt) ? humanSpan(nowMs - dueAt) : '';
+    const text = `（答应过的事到点了：${clip(card.text, 80)}${late ? ` · 已经过了 ${late}` : ''}。`
+      + '先确认做到没有；没做到就直说，别绕。）';
+    const ok = await this.push('mcore.due', text, 'flush');
     if (!ok) return;
-    this.store.update(card.id, { remindedAt: now.toISOString() });
+
+    const count = (Number(card.remindCount) || 0) + 1;
+    this.store.update(card.id, { remindedAt: now.toISOString(), remindCount: count });
+    this.state.lastRemindAt = now.toISOString();
+    this.state.remindCountToday = Number(this.state.remindCountToday ?? 0) + 1;
+    this.save();
   }
 
   private async maybeProactive(now: Date): Promise<void> {
