@@ -7,7 +7,7 @@
  *  2) 不每轮推送状态，只有 contextEveryMin>0 才推，默认 0；
  *  3) 主动开口有「对方最近说过话」这道闸，避免对着空房间调用模型。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -785,7 +785,13 @@ export class MemoryCoreWorld implements World {
       if (name === 'mcore_plan') return this.handlePlan(args);
       return `未知工具：${name}`;
     } catch (error) {
-      return `执行失败：${error instanceof Error ? error.message : String(error)}`;
+      const msg = error instanceof Error ? error.message : String(error);
+      try {
+        this.host?.log?.warn?.('[memory-core] 工具失败', { tool: name, error: msg });
+      } catch {
+        // ignore
+      }
+      return `执行失败：${msg}`;
     }
   }
 
@@ -832,6 +838,11 @@ export class MemoryCoreWorld implements World {
       });
       if (card.kind === 'promise') this.store.close(card.id);
       this.store.supersede(card.id, res.card);
+      try {
+        this.host?.log?.info?.('[memory-core] 改口', { from: card.id.slice(0, 8), to: res.card.id.slice(0, 8) });
+      } catch {
+        // ignore
+      }
       return `已改口：${card.id.slice(0, 8)} → ${res.card.id.slice(0, 8)}。旧的那条留在库里可回溯。`;
     }
 
@@ -848,6 +859,11 @@ export class MemoryCoreWorld implements World {
     }
     if (!Object.keys(patch).length) return '没有要改的字段（正文相同、元数据也没变）。';
     this.store.update(card.id, patch);
+    try {
+      this.host?.log?.info?.('[memory-core] 改', { id: card.id.slice(0, 8), fields: Object.keys(patch) });
+    } catch {
+      // ignore
+    }
     return `已改：${card.id.slice(0, 8)}…（${Object.keys(patch).filter((k) => k !== 'remindedAt' && k !== 'remindCount').join('、') || '提醒状态'}）`;
   }
 
@@ -908,7 +924,18 @@ export class MemoryCoreWorld implements World {
         pile = `\n（提醒：「${top.word}」这个话题已经有 ${top.count} 条了。同一次事别再记一遍——真要合并就写一条新的、用 closes 把旧的收起来；如果它其实是条长期规矩，写成 fact。）`;
       }
     }
-    return `已记下（${kind}${res.merged ? '，与已有记录合并' : ''}）${extra}。共 ${this.store.stats().total} 条。${pile}`;
+    try {
+      this.host?.log?.info?.('[memory-core] 写入', {
+        id: res.card.id.slice(0, 8),
+        kind,
+        chars: text.length,
+        merged: res.merged,
+        ...(closes ? { closes } : {}),
+      });
+    } catch {
+      // 日志失败不影响写入
+    }
+    return `已记下（${kind}${res.merged ? '，与已有记录合并' : ''} · ${res.card.id.slice(0, 8)}）${extra}。共 ${this.store.stats().total} 条。${pile}`;
   }
 
   /**
@@ -949,6 +976,25 @@ export class MemoryCoreWorld implements World {
   private findCard(prefix: string): { id: string; kind: string } | undefined {
     if (!prefix) return undefined;
     return this.store.find(prefix) ?? this.store.all().find((c) => c.id.startsWith(prefix)) ?? undefined;
+  }
+
+  private missNote = { q: '', at: 0 };
+
+  /** 搜不到时记一笔，之后按真实缺口补同义词，不靠拍脑袋。 */
+  private logMiss(query: string, kind?: string): void {
+    const q = query.trim().slice(0, 80);
+    if (!q) return;
+    if (this.missNote.q === q && Date.now() - this.missNote.at < 10 * 60_000) return;
+    this.missNote = { q, at: Date.now() };
+    try {
+      appendFileSync(
+        join(this.dataDir, 'misses.jsonl'),
+        `${JSON.stringify({ ts: new Date().toISOString(), query: q, kind: kind ?? null })}\n`,
+        'utf8',
+      );
+    } catch {
+      // 记不上不影响召回
+    }
   }
 
   private handleRecall(args: Record<string, unknown>): string {
@@ -1002,6 +1048,8 @@ export class MemoryCoreWorld implements World {
       days: num(args.days, 0, 0, 3650) || undefined,
       limit,
       useAging: this.cfg().recallUseAging !== false,
+      synonyms: this.cfg().synonyms,
+      cacheKey: String(this.store.revision),
     });
     const cards = ranked.map((x) => x.card);
     const strongIds = new Set(ranked.filter((x) => x.tier === 'strong').map((x) => x.card.id));
@@ -1027,14 +1075,23 @@ export class MemoryCoreWorld implements World {
     if (withSrc.length) push('（↩ 是写它时最近的那句原话；卡片本身是改写的）');
     if (cards.some((c) => c.coldAt)) push('（❄ 是很久没被想起的旧记忆，仅供参考）');
 
+    const hitMap = new Map(ranked.map((x) => [x.card.id, x.matched]));
     const cardLine = (card: (typeof cards)[number]) => {
       const tag = card.kind === 'fact' ? '' : `（${card.kind}）`;
       const when = card.src ? formatLocal(card.src.ts, tz).slice(5, 10) : '';
       const mark = when ? ` ↩${when}` : '';
       const cold = card.coldAt ? '❄' : '';
+      // 解释一下为什么它被召回：模型能判断是字面对上，还是同义词补进来的
+      const hit = mode === 'search' ? hitMap.get(card.id) ?? [] : [];
+      const why = hit.length ? ` 〔${hit.join('+')}〕` : '';
       // 行首这 8 位就是 id：改口/作废时要用它传给 mcore_write 的 closes
-      return `· ${card.id.slice(0, 8)} ${cold}${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 110)}${tag}${mark}`;
+      return `· ${card.id.slice(0, 8)} ${cold}${formatLocal(card.createdAt, tz).slice(5)} ${clip(card.text, 110)}${tag}${mark}${why}`;
     };
+
+    // 漏检记录：本地留一份，用来补同义词表；同一条查询 10 分钟内只记一次
+    if (mode === 'search' && query && !ranked.some((x) => x.tier === 'strong')) {
+      this.logMiss(query, str(args.kind, 20) || undefined);
+    }
 
     // 搜出来的分两档：真对得上的，和只是靠权重/新鲜度浮上来的。
     // 不分档的话，模型会把「有点像」当成「就是」，这也是它编故事的起点。
@@ -1510,6 +1567,8 @@ export class MemoryCoreWorld implements World {
       useAging: cfg.recallUseAging !== false,
       requireHit: true,
       minBigrams: 1,
+      synonyms: cfg.synonyms,
+      cacheKey: String(this.store.revision),
     })
       .map((x) => ({ card: x.card, adj: x.score * (kindBias[x.card.kind] ?? 1) }))
       .sort((a, b) => b.adj - a.adj)

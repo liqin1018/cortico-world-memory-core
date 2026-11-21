@@ -203,6 +203,9 @@ export function demoteTech(kind: CardKind, text: string): CardKind {
 }
 
 export class CardStore {
+  /** 每次落盘 +1。召回索引缓存用它判断「库变没变」，比逐张比对便宜。 */
+  revision = 0;
+
   private cards: Card[] = [];
   private readonly file: string;
   private readonly backupDir: string;
@@ -784,6 +787,7 @@ export class CardStore {
   }
 
   save(force = false): void {
+    this.revision += 1;
     if (!this.dirty && !force) return;
     this.dirty = false;
     this.backupOnceADay();

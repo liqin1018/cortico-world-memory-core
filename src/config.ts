@@ -67,6 +67,8 @@ export interface MemoryCoreConfig {
   recallUseAging: boolean;
   /** 每轮主动想起几条（0 = 关）。预激活，不占工具调用。 */
   preactivateLines: number;
+  /** 额外的同义词组，`快递=包裹,取件`，用分号隔开。内置表之外再补。 */
+  synonyms: string;
   /** 多久没被想起就沉到冷层（天）。0 = 关闭自动分层。 */
   chillAfterDays: number;
   /** 每隔多少分钟把状态作为一条事件投递一次（0 = 不投递，最省）。 */
@@ -128,6 +130,7 @@ export const MEMORY_CORE_DEFAULTS: MemoryCoreConfig = {
   recallMaxChars: 600,
   recallUseAging: true,
   preactivateLines: 2,
+  synonyms: '',
   /** 对方开口时，把「自我意识」插件独处时写下的那一句带进上下文。 */
   shareSelfThought: true,
   /** 把她独处时特别在意的那些（重要度 8 以上）写成 self 卡片，进星图。 */
@@ -348,6 +351,7 @@ const SETTINGS_ORDER = [
   'worlds.memory-core.siteEnabled',
   'worlds.memory-core.sitePort',
   'worlds.memory-core.preactivateLines',
+  'worlds.memory-core.synonyms',
   'worlds.memory-core.shareSelfThought',
   'worlds.memory-core.absorbSelfThought',
   'worlds.memory-core.captureTurns',

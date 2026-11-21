@@ -20,7 +20,9 @@ export const TOOL_SPECS: ToolSpec[] = [
       '写一条记忆。kind：fact=关于对方的事实，self=关于你自己的，'
       + 'episode=你自己经历过的（有画面有情绪的事，一天 3-5 条正常），'
       + 'promise=答应过的事（必须写 dueAt），note=临时信息和技术操作。'
-      + '一条只写一件事，40-80 字。旧记录用 closes 关掉。',
+      + '一条只写一件事，40-80 字。旧记录用 closes 关掉。'
+      + '对方明确说「记一下 / 记住 / 别忘了」时必须调用，按语义选 kind；'
+      + '编号只在对方问起时给。',
     parameters: obj(
       {
         kind: {

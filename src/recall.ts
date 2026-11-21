@@ -62,7 +62,17 @@ const BM25_B = 0.75;
  * 给整个候选池建一次倒排：每张卡的词频、长度、以及每个词出现在几张卡里。
  * 卡片数量级是几十到几百，一次构建比「每个词去 includes 一遍」更省。
  */
-function buildIndex(pool: readonly Card[]) {
+let cached: { key: string; index: ReturnType<typeof buildIndexRaw> } | null = null;
+
+function buildIndex(pool: readonly Card[], cacheKey?: string) {
+  if (!cacheKey) return buildIndexRaw(pool);
+  if (cached && cached.key === cacheKey) return cached.index;
+  const index = buildIndexRaw(pool);
+  cached = { key: cacheKey, index };
+  return index;
+}
+
+function buildIndexRaw(pool: readonly Card[]) {
   const df = new Map<string, number>();
   const tf = new Map<string, Map<string, number>>();
   const len = new Map<string, number>();
@@ -80,7 +90,12 @@ function buildIndex(pool: readonly Card[]) {
 }
 
 /** 一张卡的 BM25 分。字面越贴、词越罕见、卡越短，分越高。 */
-function bm25(index: ReturnType<typeof buildIndex>, card: Card, tokens: readonly string[]): number {
+function bm25(
+  index: ReturnType<typeof buildIndex>,
+  card: Card,
+  tokens: readonly string[],
+  weight?: Map<string, number>,
+): number {
   const local = index.tf.get(card.id);
   if (!local) return 0;
   const dl = index.len.get(card.id) ?? 0;
@@ -88,9 +103,10 @@ function bm25(index: ReturnType<typeof buildIndex>, card: Card, tokens: readonly
   for (const token of new Set(tokens)) {
     const f = local.get(token);
     if (!f) continue;
+    const w = weight?.get(token) ?? 1;
     const df = index.df.get(token) ?? 0;
     const idf = Math.log(1 + (index.n - df + 0.5) / (df + 0.5));
-    sum += (idf * (f * (BM25_K1 + 1))) / (f + BM25_K1 * (1 - BM25_B + (BM25_B * dl) / index.avg));
+    sum += (w * idf * (f * (BM25_K1 + 1))) / (f + BM25_K1 * (1 - BM25_B + (BM25_B * dl) / index.avg));
   }
   return sum;
 }
@@ -111,6 +127,81 @@ function freshness(iso: string | undefined, now: number): number {
   if (!Number.isFinite(at)) return 0;
   const days = Math.max(0, (now - at) / 86_400_000);
   return 1.1 * Math.exp(-days / 45);
+}
+
+/** 内置的常用同义词组：只放「生活里真的会换说法」的，不放近义但语义可能相反的。 */
+const DEFAULT_SYNONYMS: string[][] = [
+  ['快递', '包裹', '取件', '菜鸟', '驿站'],
+  ['猫', '猫咪', '小猫', '猫猫'],
+  ['狗', '狗狗', '小狗', '汪'],
+  ['吃饭', '用餐', '吃东西', '干饭'],
+  ['睡觉', '睡了', '晚安', '歇了'],
+  ['房租', '租金', '交租'],
+  ['生日', '寿辰', '过生'],
+  ['下雨', '雨天', '降雨'],
+  ['感冒', '着凉', '受凉'],
+  ['手机', '电话', '号码'],
+  ['工作', '上班', '公司', '单位'],
+  ['学校', '上课', '校园', '教室'],
+  ['工资', '薪水', '收入', '发薪'],
+  ['害怕', '怕', '恐惧', '吓'],
+  ['开心', '高兴', '快乐', '开怀'],
+  ['难过', '伤心', '低落', '心里不好受'],
+  ['累', '疲惫', '困', '乏'],
+  ['医院', '看病', '挂号', '诊所'],
+  ['搬家', '搬迁', '挪窝'],
+  ['考试', '测验', '测试', '期末'],
+  ['礼物', '礼品', '惊喜'],
+  ['道歉', '对不起', '抱歉', '不好意思'],
+  ['谢谢', '感谢', '多谢'],
+  ['早安', '早上好', '醒了'],
+];
+
+/** 把配置里的 `快递=包裹,取件; 猫=猫咪,小猫` 解析成组；写错的段直接跳过。 */
+export function parseSynonyms(raw: string): string[][] {
+  const out: string[][] = [];
+  for (const part of String(raw ?? '').split(/[;；\n]/)) {
+    const m = /^(.+?)[=:：](.+)$/.exec(part.trim());
+    if (!m) continue;
+    const group = [m[1], ...m[2].split(/[,，、\s]+/)].map((x) => x.trim()).filter(Boolean);
+    if (group.length >= 2) out.push(group);
+  }
+  return out;
+}
+
+/** token -> 同组其它词；同一组内的词互相映射。 */
+function synonymMap(groups: readonly string[][]): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const group of groups) {
+    for (const word of group) {
+      const others = group.filter((w) => w !== word);
+      const prev = map.get(word) ?? [];
+      map.set(word, [...new Set([...prev, ...others])]);
+    }
+  }
+  return map;
+}
+
+/** 扩展查询词：原词权重 1，同义词 0.55（能补漏，但压不过字面命中）。 */
+export function expandTokens(tokens: readonly string[], rawExtra = ''): { tokens: string[]; weight: Map<string, number> } {
+  const groups = [...DEFAULT_SYNONYMS, ...parseSynonyms(rawExtra)];
+  const map = synonymMap(groups);
+  const weight = new Map<string, number>();
+  const out: string[] = [];
+  for (const t of tokens) {
+    if (!weight.has(t)) {
+      weight.set(t, 1);
+      out.push(t);
+    }
+  }
+  for (const t of tokens) {
+    for (const alt of map.get(t) ?? []) {
+      if (weight.has(alt)) continue;
+      weight.set(alt, 0.55);
+      out.push(alt);
+    }
+  }
+  return { tokens: out, weight };
 }
 
 export interface RankOptions {
@@ -142,6 +233,8 @@ export interface ScoredCard {
   tagHit: number;
   /** 命中了几个「实词二元组」——比分数更好解释「像不像」 */
   bigrams: number;
+  /** 实际对上的词（含同义词扩展），给召回行做解释。 */
+  matched: string[];
   /** strong = 真的对上了，weak = 只是靠权重/新鲜度浮上来的 */
   tier: 'strong' | 'weak';
 }
@@ -152,7 +245,8 @@ export interface ScoredCard {
  */
 export function rankCardsScored(cards: readonly Card[], opts: RankOptions): ScoredCard[] {
   const now = opts.now ?? Date.now();
-  const queryTokens = tokenize(opts.query ?? '');
+  const baseTokens = tokenize(opts.query ?? '');
+  const { tokens: queryTokens, weight: tokenWeight } = expandTokens(baseTokens, opts.synonyms);
   let pool = cards.filter((c) => {
     if (opts.kind && c.kind !== opts.kind) return false;
     if (opts.days && opts.days > 0) {
@@ -173,6 +267,7 @@ export function rankCardsScored(cards: readonly Card[], opts: RankOptions): Scor
       lexical: 0,
       tagHit: 0,
       bigrams: 0,
+      matched: [],
       tier: 'strong' as const,
     }));
   }
@@ -202,11 +297,11 @@ export function rankCardsScored(cards: readonly Card[], opts: RankOptions): Scor
     for (const [tag, n] of df) if (n > cap) commonTag.add(tag);
   }
 
-  const index = buildIndex(pool);
+  const index = buildIndex(pool, opts.cacheKey ? `${opts.cacheKey}|${opts.kind ?? ''}|${opts.days ?? ''}` : undefined);
   const scored = pool.map((card) => {
     // BM25 取代原来的「二元组命中数 / 长度」：词频和长度都归一过了，
     // 一句话里反复出现同一个词不会把分堆爆，长卡也不会因为词多而虚高。
-    const lexical = bm25(index, card, queryTokens);
+    const lexical = bm25(index, card, queryTokens, tokenWeight);
     // 标签单独算一次：对方说「生日」时，打了 #生日 的卡要比正文里顺嘴提到的排得靠前。
     // 但泛标签会把所有卡都拉高，所以先剔掉「到处都是」的那些。
     const weakTags = card.tags.filter((t) => !commonTag.has(t));
@@ -226,10 +321,21 @@ export function rankCardsScored(cards: readonly Card[], opts: RankOptions): Scor
     // 双字以上的命中数：预激活用它挡单字噪音
     const hay = `${card.text} ${card.tags.join(' ')}`.toLowerCase();
     let bigrams = 0;
-    for (const token of new Set(queryTokens)) {
+    // 只用原词计数：同义词补进来的不算「实词命中」，否则分档会虚高
+    for (const token of new Set(baseTokens)) {
       if (isContentToken(token) && !common.has(token) && hay.includes(token)) bigrams += 1;
     }
-    return { card, score, lexical, tagHit, hit: lexical > 0 || tagHit > 0, bigrams };
+    // 同义词命中最多算一个实词：能进「对得上」，但不会被当成两个词
+    if (!bigrams) {
+      const synHit = [...queryTokens].some(
+        (t) => (tokenWeight.get(t) ?? 1) < 1 && isContentToken(t) && !common.has(t) && hay.includes(t),
+      );
+      if (synHit) bigrams = 1;
+    }
+    const matched = [...new Set([...baseTokens, ...queryTokens])]
+      .filter((t) => t.length >= 1 && hay.includes(t))
+      .slice(0, 3);
+    return { card, score, lexical, tagHit, hit: lexical > 0 || tagHit > 0, bigrams, matched };
   });
   scored.sort((a, b) => b.score - a.score);
   return scored
